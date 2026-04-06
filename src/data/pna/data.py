@@ -1,0 +1,155 @@
+# src/data/pna/data.py
+from __future__ import annotations
+
+import torch.utils.data as tud
+import src.config as config
+import os
+import os.path as osp
+from typing import Any, Callable, Dict, List, Optional
+import numpy as np
+import torch
+from rdkit import Chem
+from torch_geometric.data import Data, download_url, extract_tar
+from torch_geometric.data.data import BaseData
+from torch_geometric.datasets import PCQM4Mv2
+from torch_geometric.utils import from_smiles as _from_smiles
+from tqdm import tqdm
+import pandas as pd
+
+data_load_name = "pna_dataset"
+
+
+def load_data(conf: config.Config) -> tud.Dataset:
+    """
+    Load PCQM4Mv2Subset dataset.
+
+    Reads all parameters from the already-parsed global config object
+    (conf.data_configs.pna_dataset.*) — no re-parsing of sys.argv.
+
+    Behavior:
+        - If dataset exists -> loads processed sqlite backend
+        - If dataset missing -> automatically downloads + processes
+    """
+    pna_conf = conf.data_configs.pna_dataset
+
+    data_root = pna_conf.pna_data_root
+    if not data_root:
+        raise ValueError(
+            "Dataset root is empty. "
+            "Set --data_configs.pna_dataset.pna_data_root=/path/to/data_root"
+        )
+
+    num_samples = int(pna_conf.num_samples)
+    split       = str(pna_conf.split)
+    backend     = str(pna_conf.backend)
+
+    dataset = PCQM4Mv2Subset(
+        size=num_samples,
+        root=data_root,
+        split=split,
+        backend=backend,
+    )
+    return dataset
+
+
+class PCQM4Mv2Subset(PCQM4Mv2):
+    suppl_url = "http://ogb-data.stanford.edu/data/lsc/pcqm4m-v2-train.sdf.tar.gz"
+
+    def __init__(
+        self,
+        size: int,
+        root: str,
+        split: str = "train",
+        transform: Optional[Callable] = None,
+        backend: str = "sqlite",
+        from_smiles: Optional[Callable] = None
+    ) -> None:
+        assert split in ["train", "val", "test", "holdout"]
+
+        self.size = size
+
+        schema = {
+            "x": dict(dtype=torch.int64, size=(-1, 9)),
+            "edge_index": dict(dtype=torch.int64, size=(2, -1)),
+            "edge_attr": dict(dtype=torch.int64, size=(-1, 3)),
+            "smiles": str,
+            "pos": dict(dtype=torch.float32, size=(-1, 3)),
+            "y": float,
+            "z": dict(dtype=torch.long, size=(-1,)),
+        }
+
+        self.from_smiles = from_smiles or _from_smiles
+        super(PCQM4Mv2, self).__init__(root, transform, backend=backend, schema=schema)
+
+        split_idx = torch.load(self.raw_paths[1], weights_only=False)
+        self._indices = split_idx[self.split_mapping[split]].tolist()
+
+    def raw_file_names(self):
+        return super().raw_file_names + [
+            osp.join("pcqm4m-v2", "raw", "pcqm4m-v2-train.sdf")
+        ]
+
+    def download(self):
+        if all(os.path.exists(path) for path in self.raw_paths):
+            return
+
+        # Download 2d graphs
+        super().download()
+
+        # Download 3D coordinates
+        file_path = download_url(self.suppl_url, self.raw_dir)
+        # md5sum: fd72bce606e7ddf36c2a832badeec6ab
+        extract_tar(file_path, osp.join(self.raw_dir, "pcqm4m-v2", "raw"), mode="r:gz")
+        os.unlink(file_path)
+
+    def process(self) -> None:
+        df = pd.read_csv(self.raw_paths[0])
+
+        data_list: List[Data] = []
+        suppl = Chem.SDMolSupplier(self.raw_paths[-1])
+        iterator = enumerate(zip(df["smiles"], df["homolumogap"], suppl))
+        k = 0
+
+        for i, (smiles, y, extra) in tqdm(iterator, total=min(len(df), self.size)):
+            
+            if extra is None:
+                print(f"Skipping {i}")
+            else:
+                # data = from_smiles(smiles)
+                k += 1
+                data = self.from_smiles(Chem.MolToSmiles(extra))
+                data.y = y
+                data.pos = torch.tensor(
+                    extra.GetConformer().GetPositions(), dtype=torch.float
+                )
+                data.z = torch.tensor(
+                    [atom.GetAtomicNum() for atom in extra.GetAtoms()], dtype=torch.long
+                )
+
+                data_list.append(data)
+                if (
+                    k + 1 == len(df) or (k + 1) % 1000 == 0 or k >= self.size
+                ):  # Write batch-wise:
+                    self.extend(data_list)
+                    data_list = []
+
+                if k >= self.size:
+                    break
+
+    def __len__(self):
+        return min(super().__len__(), self.size)
+
+    def len(self):
+        return min(super().len(), self.size)
+
+    def mean(self):
+        return np.mean([self.get(i).y for i in range(len(self))])
+
+    def std(self):
+        return np.std([self.get(i).y for i in range(len(self))])
+
+    def serialize(self, data: BaseData) -> Dict[str, Any]:
+        rval = super().serialize(data)
+        rval["pos"] = data.pos
+        rval["z"] = data.z
+        return rval
