@@ -45,11 +45,11 @@ STEP_COLOR     = "#888888"
 # ---------------------------------------------------------------------------
 
 def discover_gc_on_csv(directory: Path) -> Optional[Path]:
-    """Find pna_spike_bs512_gc_on.csv in spike/ subdir."""
+    """Find pna_spike_bs512_wk*_gc_on.csv in spike/ subdir."""
     spike_dir = directory / "spike"
     if not spike_dir.is_dir():
         return None
-    matches = sorted(spike_dir.glob("pna_spike_bs512_gc_on.csv"))
+    matches = sorted(spike_dir.glob("pna_spike_bs512_wk*_gc_on.csv"))
     return matches[0] if matches else None
 
 
@@ -219,7 +219,7 @@ def main() -> None:
 
     gc_on_path = discover_gc_on_csv(script_dir)
     if gc_on_path is None:
-        print("No pna_spike_bs512_gc_on.csv found in spike/. Run start-pna-spike.sh first.")
+        print("No pna_spike_bs512_wk*_gc_on.csv found in spike/. Run start-pna-spike.sh first.")
         sys.exit(0)
 
     gc_off_path    = find_gc_off_csv(gc_on_path)

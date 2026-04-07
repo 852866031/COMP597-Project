@@ -10,10 +10,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Scale epoch count with batch size (reference: 5 epochs at bs=256).
+if [[ "${BS}" == "all" ]]; then
+    for _bs in 64 256 512 1024; do
+        echo "==> $(basename "${BASH_SOURCE[0]}") -bs ${_bs}"
+        bash "${BASH_SOURCE[0]}" -bs "${_bs}"
+    done
+    exit $?
+fi
+
+# Scale epoch count with batch size (reference: 10 epochs at bs=256).
 # Larger batch → more epochs; smaller batch → fewer. Floor at 1.
-# Formula: round(5 * BS / 256) using integer arithmetic.
-EPOCHS=$(( (5 * BS + 128) / 256 ))
+# Formula: round(10 * BS / 256) using integer arithmetic.
+EPOCHS=$(( (10 * BS + 128) / 256 ))
 if [[ ${EPOCHS} -lt 1 ]]; then EPOCHS=1; fi
 
 ### run PNA Carbon Trainer (energy consumption measurement)

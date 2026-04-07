@@ -104,11 +104,11 @@ def _discover(directory: Path, subdir: str, pattern: str) -> Optional[Path]:
 
 
 def discover_simple(directory: Path) -> Optional[Path]:
-    return _discover(directory, "simple", "pna_simple_bs512.csv")
+    return _discover(directory, "simple", "pna_simple_bs512_wk*.csv")
 
 
 def discover_gc_manual(directory: Path) -> Optional[Path]:
-    return _discover(directory, "manual", "pna_manual_gc_bs512.csv")
+    return _discover(directory, "manual", "pna_manual_gc_bs512_wk*.csv")
 
 
 def discover_utils(directory: Path) -> Optional[Path]:
@@ -117,7 +117,7 @@ def discover_utils(directory: Path) -> Optional[Path]:
     if not d.is_dir():
         return None
     matches = sorted(
-        p for p in d.glob("pna_utils_bs512_steps.csv")
+        p for p in d.glob("pna_utils_bs512_wk*_steps.csv")
         if "_agg" not in p.name
     )
     return matches[0] if matches else None
@@ -126,10 +126,10 @@ def discover_utils(directory: Path) -> Optional[Path]:
 def discover_carbon(directory: Path) -> Optional[Path]:
     # Prefer the timing CSV (has proper CUDA-synced step_ms like all other stats).
     # Fall back to the CodeCarbon step CSV for backwards compatibility.
-    timing = _discover(directory, "carbon", "pna_carbon_bs512_timing.csv")
+    timing = _discover(directory, "carbon", "pna_carbon_bs512_wk*_timing.csv")
     if timing:
         return timing
-    return _discover(directory, "carbon", "pna_carbon_bs512_step-steps.csv")
+    return _discover(directory, "carbon", "pna_carbon_bs512_wk*_step-steps.csv")
 
 
 # ---------------------------------------------------------------------------

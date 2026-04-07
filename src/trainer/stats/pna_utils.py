@@ -68,12 +68,18 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
     except AttributeError:
         batch_size = int(conf.batch_size)
 
+    try:
+        num_workers = int(conf.model_configs.pna.num_workers)
+    except AttributeError:
+        num_workers = 0
+
     return PNAUtilsStats(
         device=device,
         run_num=int(cc.run_num),
         project_name=str(cc.project_name),
         output_dir=str(cc.output_dir),
         batch_size=batch_size,
+        num_workers=num_workers,
     )
 
 
@@ -142,6 +148,7 @@ class PNAUtilsStats(base.TrainerStats):
         project_name: str,
         output_dir: str,
         batch_size: int = 0,
+        num_workers: int = 0,
     ) -> None:
         super().__init__()
 
@@ -150,6 +157,7 @@ class PNAUtilsStats(base.TrainerStats):
         self.project_name = project_name
         self.output_dir   = output_dir
         self.batch_size   = batch_size
+        self.num_workers  = num_workers
 
         os.makedirs(self.output_dir, exist_ok=True)
         carbon_dir = os.path.join(output_dir, "utils")
@@ -172,7 +180,7 @@ class PNAUtilsStats(base.TrainerStats):
         self._rows: List[_StepRow] = []
 
         # Output file paths
-        stem = f"pna_utils_bs{batch_size}"
+        stem = f"pna_utils_bs{batch_size}_wk{num_workers}"
         self._steps_csv_path     = os.path.join(carbon_dir, f"{stem}_steps.csv")
         self._steps_agg_csv_path = os.path.join(carbon_dir, f"{stem}_steps_agg.csv")
 
@@ -244,7 +252,7 @@ class PNAUtilsStats(base.TrainerStats):
                 # cpu_percent(interval=None) measures usage since the last call
                 # on this Process object — i.e. only this process, on its
                 # allocated core(s).  Values can exceed 100 % if multiple
-                # threads are active; with --cpus-per-task=1 that is unlikely.
+                # threads are active; 
                 cpu_util = float(self._psutil_proc.cpu_percent(interval=None))
             except Exception as exc:
                 logger.debug("PNAUtilsStats: CPU util sample failed: %s", exc)

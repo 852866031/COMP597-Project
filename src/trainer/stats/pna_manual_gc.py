@@ -51,12 +51,18 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
     except AttributeError:
         batch_size = int(conf.batch_size)
 
+    try:
+        num_workers = int(conf.model_configs.pna.num_workers)
+    except AttributeError:
+        num_workers = 0
+
     return PNAManualGCStats(
         device=device,
         run_num=int(cc.run_num),
         project_name=str(cc.project_name),
         output_dir=str(cc.output_dir),
         batch_size=batch_size,
+        num_workers=num_workers,
     )
 
 
@@ -108,6 +114,7 @@ class PNAManualGCStats(base.TrainerStats):
         project_name: str,
         output_dir: str,
         batch_size: int = 0,
+        num_workers: int = 0,
     ) -> None:
         super().__init__()
 
@@ -116,6 +123,7 @@ class PNAManualGCStats(base.TrainerStats):
         self.project_name = project_name
         self.output_dir   = output_dir
         self.batch_size   = batch_size
+        self.num_workers  = num_workers
 
         os.makedirs(output_dir, exist_ok=True)
         manual_dir = os.path.join(output_dir, "manual")
@@ -131,7 +139,7 @@ class PNAManualGCStats(base.TrainerStats):
         self._last_loss: float = float("nan")
         self._rows: List[_StepRow] = []
 
-        stem = f"pna_manual_gc_bs{batch_size}"
+        stem = f"pna_manual_gc_bs{batch_size}_wk{num_workers}"
         self._steps_csv_path = os.path.join(manual_dir, f"{stem}.csv")
         self._agg_csv_path   = os.path.join(manual_dir, f"{stem}_agg.csv")
 

@@ -246,7 +246,7 @@ def discover_steps_csvs(directory: Path) -> List[Path]:
     utils_dir = directory / "utils"
     if not utils_dir.is_dir():
         return []
-    return sorted(utils_dir.glob("pna_utils_bs512_steps.csv"))
+    return sorted(utils_dir.glob("pna_utils_bs512_wk*_steps.csv"))
 
 
 def process_file(steps_path: Path) -> None:
@@ -293,7 +293,7 @@ def main() -> None:
         csv_files = discover_steps_csvs(script_dir)
         if not csv_files:
             print(
-                f"No pna_utils_bs512_steps.csv found in {script_dir / 'utils'}.\n"
+                f"No pna_utils_bs512_wk*_steps.csv found in {script_dir / 'utils'}.\n"
                 "Run start-pna-utils.sh first."
             )
             sys.exit(0)

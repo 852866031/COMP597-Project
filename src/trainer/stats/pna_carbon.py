@@ -96,12 +96,18 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
     except AttributeError:
         batch_size = int(conf.batch_size)
 
+    try:
+        num_workers = int(conf.model_configs.pna.num_workers)
+    except AttributeError:
+        num_workers = 0
+
     return PNACarbonStats(
         device=device,
         run_num=int(cc.run_num),
         project_name=str(cc.project_name),
         output_dir=str(cc.output_dir),
         batch_size=batch_size,
+        num_workers=num_workers,
     )
 
 
@@ -148,6 +154,7 @@ class PNACarbonStats(base.TrainerStats):
         project_name: str,
         output_dir: str,
         batch_size: int = 0,
+        num_workers: int = 0,
     ) -> None:
         super().__init__()
 
@@ -156,13 +163,14 @@ class PNACarbonStats(base.TrainerStats):
         self.project_name = project_name
         self.output_dir   = output_dir
         self.batch_size   = batch_size
+        self.num_workers  = num_workers
 
         os.makedirs(output_dir, exist_ok=True)
         carbon_dir = os.path.join(output_dir, "carbon")
         os.makedirs(carbon_dir, exist_ok=True)
 
         gpu_id = device.index if (device.type == "cuda" and device.index is not None) else 0
-        stem   = f"pna_carbon_bs{batch_size}"
+        stem   = f"pna_carbon_bs{batch_size}_wk{num_workers}"
 
         # ------------------------------------------------------------------
         # Step tracker — one CodeCarbon task per training step.

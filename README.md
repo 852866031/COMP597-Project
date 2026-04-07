@@ -81,10 +81,10 @@ All primary measurements use a batch size of **512** with **10 epochs** (1 warmu
 
 | Batch Size | Epochs |
 |---|---|
-| 64 | 1 |
-| 256 | 5 |
-| 512 | 10 |
-| 1024 | 20 |
+| 64 | 3 |
+| 256 | 10 |
+| 512 | 20 |
+| 1024 | 40 |
 
 ### 1.5 Potential Bottlenecks
 
@@ -222,11 +222,11 @@ Each phase (forward and backward) has an **independent 500 ms sampling gate** �
 
 At batch size 512, the batched molecular graph is large enough to provide somewhat more contiguous memory access patterns than very small batches, but the fundamental sparsity of the underlying molecular topology limits how much GPU occupancy can improve. The low utilisation observed here is therefore a property of the problem domain, not a tuning artefact.
 
-**CPU utilisation**: The per-process CPU plot directly reflects the training process's own activity on its single allocated core. Values are low and relatively flat across all steps. Because the job is pinned to one core (`--cpus-per-task=1`), the scale is unambiguous: 100% would mean that core is fully saturated by our process; the consistently low readings confirm that the training loop spends the vast majority of each step waiting on GPU kernel completions rather than executing Python code. The non-zero baseline reflects Python interpreter overhead, PyTorch CUDA dispatch calls, and DataLoader collation, all of which occur on the main CPU thread. The absence of any spike pattern in the CPU trace confirms that GC pauses — which would appear here as brief bursts of Python interpreter activity — have been successfully eliminated by the inter-epoch manual collection strategy.
+**CPU utilisation**: The per-process CPU plot shows the single allocated core is heavily loaded — consistently above 70% throughout training. This is the most important finding in this section. Because the job is pinned to one core (`--cpus-per-task=1`), the reading is unambiguous: the core is nearly saturated by the training process. The high load comes from two sources serialised on the same thread: first, **DataLoader collation** (`num_workers=0`) — every step the main thread runs `Batch.from_data_list()` on the entire batch of molecular `Data` objects, stacking node feature tensors, concatenating and offset-shifting edge index tensors, and building batch assignment vectors, all in Python; second, **CUDA kernel dispatch** — submitting 64 layers × multiple operations per layer to the CUDA stream involves a Python → C++ → CUDA call per operation, each of which consumes CPU cycles on the main thread. These two phases alternate in the same thread and together account for the high sustained CPU load. The absence of any spike pattern in the CPU trace confirms that GC pauses have been successfully eliminated by the inter-epoch collection strategy — if GC were firing inside steps, the already-loaded core would show brief but sharp utilisation spikes above the high baseline.
 
 **RAM usage**: RAM usage is stable across steps with a gradual upward drift within each epoch and a step-down at epoch boundaries where `gc.collect(2)` reclaims accumulated short-lived batch objects. This is consistent with Python's generational GC under manual control: the between-epoch collections prevent runaway heap growth, while within an epoch, the younger generations accumulate object allocations incrementally. With 10 epochs at batch size 512, the sawtooth pattern of within-epoch growth and inter-epoch reset is more clearly visible than at shorter runs. The stable plateau reached within each epoch confirms that the inter-epoch collection cadence is sufficient to prevent memory pressure over the full training run.
 
-**Connection to PNA workload characteristics**: The persistently low GPU utilisation across both phases is a defining characteristic of GNN workloads and distinguishes PNA sharply from dense workloads like CNNs or Transformers. PNA operates on molecular graphs where each node has a variable, often small neighbourhood — aggregating over 3–5 neighbours is common in PCQM4Mv2. These small, irregular neighbourhoods produce short, poorly-coalesced memory accesses and low arithmetic intensity per kernel launch, leaving the GPU underutilised despite the 64-layer depth. The correspondingly low and flat per-process CPU utilisation confirms that CUDA kernel execution time dominates the per-step budget: the training loop is neither CPU-bound nor GPU-saturated, but rather bottlenecked by the latency of many short, irregular GPU kernel launches over sparse graph neighbourhoods. This also explains the GC spikes observed in the simple run — those were pure Python-side pauses during which the GPU sat idle, inflating step latency without any corresponding rise in GPU utilisation.
+**Connection to PNA workload characteristics**: The combination of high CPU utilisation and low GPU utilisation points to a clear bottleneck: **the workload is CPU-bound on the DataLoader**. The single-threaded data pipeline (`num_workers=0`) forces the main thread to alternate between collating the next batch (heavy Python work) and dispatching GPU kernels — the GPU is frequently idle waiting for the CPU to finish preparing its input rather than running at full capacity. This is the primary reason GPU utilisation is low: the `pynvml` utilisation reading is time-averaged over the full step window, so GPU idle time during collation dilutes the reading even if the GPU is reasonably active during its compute phase. A secondary contribution comes from the sparse nature of molecular graph aggregations — short, irregular scatter/gather kernels have low arithmetic intensity — but this is not the dominant effect. The practical implication is that increasing `num_workers` in the DataLoader to overlap data preparation with GPU computation, or pre-batching the dataset offline, would be the most effective lever for improving GPU utilisation and reducing step latency. This also reframes the GC spike result: GC pauses fired on a core that was already heavily loaded by collation, so even a brief pause completely stalled the pipeline and caused step-level latency spikes proportionally larger than the raw GC duration alone.
 
 ---
 
@@ -336,12 +336,12 @@ We run the utilisation and energy measurement scripts at four batch sizes: **64,
 
 | Batch Size | Epochs | Steps/Epoch (approx.) | Total Steps (approx.) |
 |---|---|---|---|
-| 64 | 1 | ~N/64 | ~N/64 |
-| 256 | 5 | ~N/256 | ~5N/256 |
-| 512 | 10 | ~N/512 | ~10N/512 |
-| 1024 | 20 | ~N/1024 | ~20N/1024 |
+| 64 | 3 | ~N/64 | ~3N/64 |
+| 256 | 10 | ~N/256 | ~10N/256 |
+| 512 | 20 | ~N/512 | ~20N/512 |
+| 1024 | 40 | ~N/1024 | ~40N/1024 |
 
-Since N/64 ≈ 5N/256 ≈ 10N/512 ≈ 20N/1024, each configuration processes approximately the same total number of graph samples, making the per-epoch averaged metrics directly comparable.
+Since 3N/64 ≈ 10N/256 ≈ 20N/512 ≈ 40N/1024, each configuration processes approximately the same total number of graph samples, making the per-epoch averaged metrics directly comparable.
 
 Energy metrics are reported as **mean per epoch** (sum of sampled step energy per epoch, averaged across all epochs) so that runs with different epoch counts are on equal footing.
 
@@ -370,7 +370,7 @@ scripts/start-pna-carbon.sh -bs 1024
 
 **GPU utilisation**: As batch size increases, GPU utilisation rises. The mechanism is straightforward: a larger batch produces a larger batched molecular graph, with more nodes and edges processed in a single forward pass. This increases the arithmetic intensity of each kernel launch and improves GPU occupancy — the GPU's SMs are kept busier longer per kernel rather than spending more time on kernel launch overhead relative to computation. However, the improvement is sub-linear and plateaus at larger batch sizes. The fundamental constraint is the sparse topology of molecular graphs: regardless of how many molecules are batched, each individual neighbourhood aggregation still operates on a small, irregular set of neighbours. Larger batches aggregate more of these small operations into single kernel calls but cannot eliminate the underlying sparsity.
 
-**CPU utilisation**: Per-process CPU utilisation shows a moderate increase with batch size. The DataLoader's collation step merges more `Data` objects per batch at higher batch sizes, generating more Python-side work per step. Additionally, larger batches produce more short-lived Python objects (larger edge index tensors, larger feature tensors, larger batch assignment vectors), which modestly increases the Python interpreter's memory management workload within the measured step window. Despite this, absolute CPU utilisation remains low across all batch sizes, confirming that the training loop is GPU-latency-bound at all configurations — the CPU is never the bottleneck.
+**CPU utilisation**: Per-process CPU utilisation is high across all batch sizes, consistently above 70%, confirming that the **single core is the pacing constraint at every configuration**. As batch size increases, the DataLoader must collate more `Data` objects per step — more edge index concatenations, larger feature stacks, bigger batch assignment vectors — which increases Python-side work per step and pushes CPU utilisation higher. The relationship is not perfectly linear because larger batches also mean longer GPU compute windows (more graph nodes and edges per step), which slightly reduces the fraction of step time spent in pure CPU collation. Nonetheless, at all tested batch sizes the CPU core is clearly the bottleneck, not the GPU.
 
 ### 7.3 Energy vs. Batch Size
 

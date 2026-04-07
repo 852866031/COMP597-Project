@@ -37,12 +37,18 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
     except AttributeError:
         batch_size = int(conf.batch_size)
 
+    try:
+        num_workers = int(conf.model_configs.pna.num_workers)
+    except AttributeError:
+        num_workers = 0
+
     return PNATrainerSpikeStats(
         device=device,
         run_num=int(cc.run_num),
         project_name=str(cc.project_name),
         output_dir=str(cc.output_dir),
         batch_size=batch_size,
+        num_workers=num_workers,
     )
 
 
@@ -93,6 +99,7 @@ class PNATrainerSpikeStats(base.TrainerStats):
         project_name: str,
         output_dir: str,
         batch_size: int = 0,
+        num_workers: int = 0,
     ) -> None:
         super().__init__()
 
@@ -101,6 +108,7 @@ class PNATrainerSpikeStats(base.TrainerStats):
         self.project_name = project_name
         self.output_dir   = output_dir
         self.batch_size   = batch_size
+        self.num_workers  = num_workers
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(os.path.join(output_dir, "spike"), exist_ok=True)
 
@@ -131,10 +139,10 @@ class PNATrainerSpikeStats(base.TrainerStats):
         self._gc_start_ns: Dict[int, int] = {}
 
         # Output file paths
-        self._gc_on_csv_path      = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_on.csv")
-        self._gc_off_csv_path     = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_off.csv")
-        self._gc_manual_csv_path  = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_manual.csv")
-        self._gc_events_csv_path  = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_events.csv")
+        self._gc_on_csv_path      = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_wk{num_workers}_gc_on.csv")
+        self._gc_off_csv_path     = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_wk{num_workers}_gc_off.csv")
+        self._gc_manual_csv_path  = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_wk{num_workers}_gc_manual.csv")
+        self._gc_events_csv_path  = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_wk{num_workers}_gc_events.csv")
 
         logger.info(
             "PNATrainerSpikeStats: gc_on CSV  -> %s",

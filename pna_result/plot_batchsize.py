@@ -23,9 +23,7 @@ Output — pna_result/plots/
   1. bs_gpu_util.png        — avg GPU utilisation (%) across all epochs, per batch size
   2. bs_cpu_util.png        — avg CPU utilisation (%) across all epochs, per batch size (per-process)
   3. bs_energy_total.png    — mean per-epoch total energy (mWh) averaged across all epochs, per batch size
-  4. bs_energy_fwd.png      — mean per-epoch forward pass energy (mWh) averaged across all epochs, per batch size
-  5. bs_energy_bwd.png      — mean per-epoch backward pass energy (mWh) averaged across all epochs, per batch size
-  6. bs_energy_opt.png      — mean per-epoch optimizer step energy (mWh) averaged across all epochs, per batch size
+  4. bs_energy_substep.png  — clustered bar: x = substep (fwd/bwd/opt), clusters = batch sizes, mean per-epoch energy (mWh)
 
 Usage
 -----
@@ -289,36 +287,90 @@ def plot_energy_total(step_data: Dict[int, pd.DataFrame], out_path: Path) -> Non
 # Plots 4–6 — per-phase energy aggregated across all epochs
 # ---------------------------------------------------------------------------
 
-_PHASE_TITLES = {
-    "fwd": "PNA — Forward Pass Sampled Energy vs Batch Size",
-    "bwd": "PNA — Backward Pass Sampled Energy vs Batch Size",
-    "opt": "PNA — Optimizer Step Sampled Energy vs Batch Size",
-}
-
-_PHASE_LABELS = {
-    "fwd": "Forward",
-    "bwd": "Backward",
-    "opt": "Optimizer",
-}
+_PHASES       = ["fwd", "bwd", "opt"]
+_PHASE_LABELS = {"fwd": "Forward", "bwd": "Backward", "opt": "Optimizer"}
 
 
-def plot_energy_phase(substep_data: Dict[int, pd.DataFrame],
-                      phase: str, out_path: Path) -> None:
-    avgs: List[float] = []
-    for bs in BATCH_SIZES:
-        df   = substep_data[bs]
-        filt = df[df["phase"] == phase]
-        avgs.append(float(filt.groupby("epoch")["energy_consumed"].sum().mean()) * KWH_TO_MWH)
+def plot_energy_substep(substep_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    """Clustered bar chart: x = substep (fwd/bwd/opt), clusters = batch sizes.
 
-    fig, ax = plt.subplots(figsize=(7, 5))
+    Each bar is split into two stacked portions:
+      - Bottom (hatched //): CPU energy contribution
+      - Top    (solid):      non-CPU energy (GPU + RAM)
+    """
+    # avgs_total / avgs_cpu[phase][bs_index] = mean per-epoch energy (mWh)
+    avgs_total: Dict[str, List[float]] = {}
+    avgs_cpu:   Dict[str, List[float]] = {}
+    for phase in _PHASES:
+        avgs_total[phase] = []
+        avgs_cpu[phase]   = []
+        for bs in BATCH_SIZES:
+            df   = substep_data[bs]
+            filt = df[df["phase"] == phase]
+            by_epoch = filt.groupby("epoch")[["energy_consumed", "cpu_energy"]].sum()
+            avgs_total[phase].append(float(by_epoch["energy_consumed"].mean()) * KWH_TO_MWH)
+            avgs_cpu[phase].append(float(by_epoch["cpu_energy"].mean()) * KWH_TO_MWH)
+
+    n_phases = len(_PHASES)
+    n_bs     = len(BATCH_SIZES)
+    x_base   = np.arange(n_phases)
+    offsets  = (np.arange(n_bs) - (n_bs - 1) / 2.0) * (0.8 / n_bs)
+    width    = 0.8 / n_bs
+
+    fig, ax = plt.subplots(figsize=(9, 5))
     fig.suptitle(
-        f"{_PHASE_TITLES[phase]}\n"
-        f"mean per epoch · CodeCarbon (mWh)",
+        "PNA — Substep Energy vs Batch Size\nmean per epoch · CodeCarbon (mWh)",
         fontsize=13, fontweight="bold",
     )
 
-    _simple_bars(ax, avgs, "Energy (mWh)", fmt="{:.3f}")
-    _save(fig, out_path, f"bs_energy_{phase}")
+    # Minimum hatched-region height to print a label (6% of tallest bar)
+    y_max = max(avgs_total[phase][j] for phase in _PHASES for j in range(n_bs))
+    min_label_height = y_max * 0.06
+
+    for i, (bs, color, label) in enumerate(zip(BATCH_SIZES, BS_COLORS, BS_LABELS)):
+        xs       = x_base + offsets[i]
+        cpu_vals = [avgs_cpu[phase][i]                        for phase in _PHASES]
+        top_vals = [avgs_total[phase][i] - avgs_cpu[phase][i] for phase in _PHASES]
+        tot_vals = [avgs_total[phase][i]                      for phase in _PHASES]
+
+        # CPU portion — hatched
+        ax.bar(xs, cpu_vals, width=width, color=color, alpha=0.85,
+               hatch="//", edgecolor="white", linewidth=0.5,
+               label=label, zorder=3)
+        # Non-CPU portion — solid, stacked on top of CPU portion
+        ax.bar(xs, top_vals, width=width, color=color, alpha=0.85,
+               bottom=cpu_vals, edgecolor="white", linewidth=0.5,
+               zorder=3)
+
+        # Annotate CPU % centred inside the hatched portion
+        for x, cpu, tot in zip(xs, cpu_vals, tot_vals):
+            if tot == 0 or cpu < min_label_height:
+                continue
+            pct = cpu / tot * 100
+            ax.text(x, cpu / 2, f"{pct:.0f}%",
+                    ha="center", va="center",
+                    fontsize=6.5, fontweight="bold", color="black",
+                    zorder=5)
+
+    ax.set_xticks(x_base)
+    ax.set_xticklabels([_PHASE_LABELS[p] for p in _PHASES], fontsize=11)
+    ax.set_xlabel("Substep")
+    ax.set_ylabel("Energy (mWh)")
+
+    # Batch-size legend (colour swatches)
+    bs_legend = ax.legend(fontsize=9, loc="upper right")
+
+    # Add a second legend entry explaining the hatch pattern
+    import matplotlib.patches as mpatches
+    cpu_patch = mpatches.Patch(facecolor="#aaaaaa", hatch="//",
+                               edgecolor="white", label="CPU portion (hatched)")
+    ax.legend(handles=[*bs_legend.legend_handles, cpu_patch],
+              fontsize=9, loc="upper right")
+
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax.set_axisbelow(True)
+
+    _save(fig, out_path, "bs_energy_substep")
 
 
 # ---------------------------------------------------------------------------
@@ -341,12 +393,10 @@ def main() -> None:
     print("Done.\n")
 
     print("Generating plots:")
-    plot_gpu_util_avg(utils_data,              out_dir / "bs_gpu_util.png")
-    plot_cpu_util_avg(utils_data,              out_dir / "bs_cpu_util.png")
-    plot_energy_total(step_data,               out_dir / "bs_energy_total.png")
-    plot_energy_phase(substep_data, "fwd",     out_dir / "bs_energy_fwd.png")
-    plot_energy_phase(substep_data, "bwd",     out_dir / "bs_energy_bwd.png")
-    plot_energy_phase(substep_data, "opt",     out_dir / "bs_energy_opt.png")
+    plot_gpu_util_avg(utils_data,    out_dir / "bs_gpu_util.png")
+    plot_cpu_util_avg(utils_data,    out_dir / "bs_cpu_util.png")
+    plot_energy_total(step_data,     out_dir / "bs_energy_total.png")
+    plot_energy_substep(substep_data, out_dir / "bs_energy_substep.png")
 
     print("\nDone.")
 

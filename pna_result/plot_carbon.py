@@ -610,16 +610,16 @@ def plot_pancake_carbon_hardware(step_df: pd.DataFrame, out_path: Path,
 # ---------------------------------------------------------------------------
 
 def discover_step_csvs(directory: Path) -> List[Path]:
-    """Find pna_carbon_bs512_step-steps.csv in carbon/ subdir."""
+    """Find pna_carbon_bs512_wk*_step-steps.csv in carbon/ subdir."""
     carbon_dir = directory / "carbon"
     if not carbon_dir.is_dir():
         return []
-    return sorted(carbon_dir.glob("pna_carbon_bs512_step-steps.csv"))
+    return sorted(carbon_dir.glob("pna_carbon_bs512_wk*_step-steps.csv"))
 
 
 def _find_substep_csv(step_csv: Path) -> Optional[Path]:
-    """pna_carbon_bs<N>_step-steps.csv → pna_carbon_bs<N>_substep-substeps.csv"""
-    m = re.match(r"(pna_carbon_bs\d+)_step-steps\.csv", step_csv.name)
+    """pna_carbon_bs<N>_wk<M>_step-steps.csv → pna_carbon_bs<N>_wk<M>_substep-substeps.csv"""
+    m = re.match(r"(pna_carbon_bs\d+_wk\d+)_step-steps\.csv", step_csv.name)
     if not m:
         return None
     candidate = step_csv.parent / f"{m.group(1)}_substep-substeps.csv"
@@ -705,7 +705,7 @@ def main() -> None:
         csv_files = discover_step_csvs(script_dir)
         if not csv_files:
             print(
-                f"No pna_carbon_bs512_step-steps.csv found in {script_dir / 'carbon'}.\n"
+                f"No pna_carbon_bs512_wk*_step-steps.csv found in {script_dir / 'carbon'}.\n"
                 "Run start-pna-carbon.sh first."
             )
             sys.exit(0)
