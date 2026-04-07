@@ -124,6 +124,11 @@ def discover_utils(directory: Path) -> Optional[Path]:
 
 
 def discover_carbon(directory: Path) -> Optional[Path]:
+    # Prefer the timing CSV (has proper CUDA-synced step_ms like all other stats).
+    # Fall back to the CodeCarbon step CSV for backwards compatibility.
+    timing = _discover(directory, "carbon", "pna_carbon_bs*_timing.csv")
+    if timing:
+        return timing
     return _discover(directory, "carbon", "pna_carbon_bs*_step-steps.csv")
 
 
@@ -153,17 +158,25 @@ def load_utils_p95(path: Path) -> float:
 
 
 def load_carbon_p95(path: Path) -> float:
-    """Carbon CSV stores duration in seconds; convert to ms."""
+    """Load carbon step latency.
+
+    Prefers pna_carbon_bs*_timing.csv which has a proper CUDA-synced
+    ``step_ms`` column (same as every other stats CSV).  Falls back to
+    the CodeCarbon step CSV where ``duration`` (seconds) is used instead,
+    but note that path measures only inside the task window and misses
+    the CodeCarbon setup/teardown overhead at step boundaries.
+    """
     df = pd.read_csv(path)
-    if "duration" not in df.columns:
-        raise ValueError(f"'duration' column not found in {path}")
-    # Only keep step rows (task_name matches e{n}_step_{n})
-    mask = df["task_name"].astype(str).str.match(r"e\d+_step_\d+")
-    step_rows = df[mask]
-    if step_rows.empty:
-        raise ValueError(f"No step rows found in {path}")
-    step_ms = pd.to_numeric(step_rows["duration"], errors="coerce") * 1000.0
-    return _avg_p95_ms(step_ms)
+    if "step_ms" in df.columns:
+        return _avg_p95_ms(df["step_ms"])
+    if "duration" in df.columns:
+        mask = df["task_name"].astype(str).str.match(r"e\d+_step_\d+")
+        step_rows = df[mask]
+        if step_rows.empty:
+            raise ValueError(f"No step rows found in {path}")
+        step_ms = pd.to_numeric(step_rows["duration"], errors="coerce") * 1000.0
+        return _avg_p95_ms(step_ms)
+    raise ValueError(f"Neither 'step_ms' nor 'duration' column found in {path}")
 
 
 # ---------------------------------------------------------------------------

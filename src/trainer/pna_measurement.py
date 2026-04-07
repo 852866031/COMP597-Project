@@ -82,3 +82,30 @@ class PNAMeasurementTrainer(PNATrainer):
         gc.enable()
 
         self.stats.log_stats()
+
+    def _run_epoch(self, epoch: int, model_kwargs: Dict[str, Any],
+                   record: bool, progress_bar) -> None:
+        """Run one epoch.  If *record* is False stats calls are skipped (warmup)."""
+        import gc
+        for i, batch in enumerate(self.loader):
+            if (i%25) == 0:
+                gc.collect(2)
+            if record:
+                self.stats.start_step()
+
+            loss, descr = self.step(i, epoch, batch, model_kwargs)
+
+            if record:
+                self.stats.stop_step()
+
+                if self.enable_checkpointing and self.should_save_checkpoint(i):
+                    self.stats.start_save_checkpoint()
+                    self.save_checkpoint(i)
+                    self.stats.stop_save_checkpoint()
+
+                self.stats.log_loss(loss)
+                self.stats.log_step()
+
+            if descr is not None:
+                progress_bar.set_description(descr)
+            progress_bar.update(1)

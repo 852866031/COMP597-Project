@@ -40,9 +40,12 @@ PNA stats classes.
 """
 from __future__ import annotations
 
+import csv
 import logging
 import os
 import time
+from dataclasses import asdict, dataclass
+from typing import List
 
 import torch
 from codecarbon import OfflineEmissionsTracker
@@ -50,6 +53,7 @@ import codecarbon.core.cpu
 
 import src.config as config
 import src.trainer.stats.base as base
+import src.trainer.stats.utils as stats_utils
 from src.trainer.stats.codecarbon import SimpleFileOutput
 
 # Force CodeCarbon to use constant CPU TDP (not psutil live sampling) for
@@ -60,13 +64,18 @@ logger = logging.getLogger(__name__)
 
 trainer_stats_name = "pna_carbon"
 
-# Minimum wall-clock nanoseconds between sampled steps.
-# Steps that start before this interval has elapsed since the last sampled
-# step are skipped entirely — no start_task / stop_task calls are made, so
-# CodeCarbon incurs zero per-step overhead for those steps.
-# 500 ms gives roughly one sampled step every 500 ms of wall-clock time,
-# matching the sampling cadence of pna_utils.py.
-_SAMPLE_INTERVAL_NS: int = 500_000_000  # 500 ms
+# Minimum nanoseconds between CodeCarbon-tracked steps.
+# Steps inside the interval pass through all hooks as timing-only no-ops for
+# CodeCarbon (timers still run on every step for accurate step_ms).
+_SAMPLE_INTERVAL_NS: int = 1000_000_000  # 500 ms
+
+
+@dataclass
+class _TimingRow:
+    """One row in the timing CSV — step-level wall-clock time only."""
+    epoch:    int
+    step_idx: int
+    step_ms:  float
 
 
 # ---------------------------------------------------------------------------
@@ -213,12 +222,19 @@ class PNACarbonStats(base.TrainerStats):
         # to avoid the "_active_task_emissions_at_start was None" CodeCarbon error.
         self._recording: bool = False
 
-        # Sampling gate — only open a CodeCarbon task window for steps that
-        # fall at least _SAMPLE_INTERVAL_NS after the previous sampled step.
-        # All other steps pass through every hook as no-ops, eliminating the
-        # 8 start_task / stop_task calls that drove the 17 % overhead.
+        # Interval gate — controls CodeCarbon task start/stop only.
+        # Timers run on every step; CodeCarbon only fires when the interval
+        # has elapsed so start_task/stop_task overhead is amortised.
         self._last_sample_ns: int = 0
         self._sampling_this_step: bool = False
+
+        # CUDA-synced wall-clock step timer — records full step_ms including any
+        # CodeCarbon start_task / stop_task overhead on sampled steps.
+        self._t_step = stats_utils.RunningTimer()
+
+        # Accumulated timing rows written by log_stats().
+        self._timing_rows: List[_TimingRow] = []
+        self._timing_csv_path = os.path.join(carbon_dir, f"{stem}_timing.csv")
 
         # Start both task-mode trackers.  Tasks are started/stopped inside the
         # training loop; the background threads just keep sampling power.
@@ -277,24 +293,30 @@ class PNACarbonStats(base.TrainerStats):
 
     def start_step(self) -> None:
         self._step_idx += 1
-        # Default: do not open a task window for this step.
         self._sampling_this_step = False
         if not self._recording:
             return
-        # Sampling gate: only open a task window if the interval has elapsed.
+        # Check interval gate — only open a CodeCarbon task for this step if
+        # enough wall-clock time has elapsed since the last sampled step.
         now_ns = time.perf_counter_ns()
-        if now_ns - self._last_sample_ns < _SAMPLE_INTERVAL_NS:
-            return
-        self._last_sample_ns = now_ns
-        self._sampling_this_step = True
+        if now_ns - self._last_sample_ns >= _SAMPLE_INTERVAL_NS:
+            self._last_sample_ns = now_ns
+            self._sampling_this_step = True
+        # Always time the step so step_ms is available for every measured step.
+        # Timer starts before start_task (when sampled) so CodeCarbon overhead
+        # is included inside the timing window.
         self._sync()
-        self._step_tracker.start_task(task_name=self._step_task())
+        self._t_step.start()
+        if self._sampling_this_step:
+            self._step_tracker.start_task(task_name=self._step_task())
 
     def stop_step(self) -> None:
-        if not self._sampling_this_step:
+        if not self._recording:
             return
         self._sync()
-        self._step_tracker.stop_task(task_name=self._step_task())
+        if self._sampling_this_step:
+            self._step_tracker.stop_task(task_name=self._step_task())
+        self._t_step.stop()
 
     # --- forward -------------------------------------------------------
 
@@ -347,14 +369,41 @@ class PNACarbonStats(base.TrainerStats):
         pass
 
     # ------------------------------------------------------------------
-    # Logging — CodeCarbon writes CSVs on stop_train(); no extra work needed
+    # Logging
     # ------------------------------------------------------------------
 
     def log_loss(self, loss: torch.Tensor) -> None:
         pass
 
     def log_step(self) -> None:
-        pass
+        """Append one timing row per step — called after stop_step()."""
+        if not self._recording:
+            return
+        self._timing_rows.append(_TimingRow(
+            epoch    = self._current_epoch,
+            step_idx = self._step_idx,
+            step_ms  = self._t_step.get_last() / 1e6,
+        ))
 
     def log_stats(self) -> None:
-        pass  # CSVs already written by stop_train() → tracker.stop()
+        """Write the timing CSV (CodeCarbon CSVs are written by stop_train())."""
+        self._write_timing_csv()
+
+    # ------------------------------------------------------------------
+    # CSV helper
+    # ------------------------------------------------------------------
+
+    def _write_timing_csv(self) -> None:
+        if not self._timing_rows:
+            logger.warning("PNACarbonStats: no timing rows; skipping timing CSV")
+            return
+        fieldnames = list(asdict(self._timing_rows[0]).keys())
+        with open(self._timing_csv_path, "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in self._timing_rows:
+                writer.writerow(asdict(row))
+        logger.info(
+            "PNACarbonStats: wrote %d timing rows to %s",
+            len(self._timing_rows), os.path.abspath(self._timing_csv_path),
+        )
