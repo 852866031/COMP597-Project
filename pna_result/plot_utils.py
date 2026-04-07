@@ -238,25 +238,19 @@ def _draw_epoch_vlines(ax, epoch_step_ids: List[int]) -> None:
 
 def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
                   epoch_step_ids: List[int]) -> None:
-    """GPU utilisation plot with dots coloured by sampled_phase."""
-    col = "gpu_util"
-    if col not in df.columns:
-        print(f"  4. util_gpu            -> [skip] column '{col}' not in CSV")
+    """GPU utilisation plot — forward and backward as independent series."""
+    fwd_col = "fwd_gpu_util"
+    bwd_col = "bwd_gpu_util"
+
+    fwd_series = pd.to_numeric(df[fwd_col], errors="coerce") if fwd_col in df.columns else pd.Series(dtype=float)
+    bwd_series = pd.to_numeric(df[bwd_col], errors="coerce") if bwd_col in df.columns else pd.Series(dtype=float)
+
+    fwd_mask = fwd_series.notna()
+    bwd_mask = bwd_series.notna()
+
+    if fwd_mask.sum() == 0 and bwd_mask.sum() == 0:
+        print(f"  4. util_gpu            -> [skip] no sampled data in fwd_gpu_util / bwd_gpu_util")
         return
-
-    series = pd.to_numeric(df[col], errors="coerce")
-    mask   = series.notna()
-    if mask.sum() == 0:
-        print(f"  4. util_gpu            -> [skip] no sampled data for '{col}'")
-        return
-
-    sampled = df[mask].copy()
-    sampled["_val"] = series[mask].values
-
-    if "sampled_phase" in sampled.columns:
-        sampled["sampled_phase"] = sampled["sampled_phase"].fillna("").astype(str)
-    else:
-        sampled["sampled_phase"] = ""
 
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.suptitle(
@@ -264,23 +258,20 @@ def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
         fontsize=13, fontweight="bold",
     )
 
-    ax.plot(sampled["step_idx"].to_numpy(), sampled["_val"].to_numpy(),
-            color="#aaaaaa", linewidth=0.7, alpha=0.5, zorder=1)
-
-    for phase, group in sampled.groupby("sampled_phase", sort=False):
-        color = PHASE_COLORS.get(phase, PHASE_COLORS[""])
-        label = phase.capitalize() if phase else "Sampled"
-        ax.scatter(group["step_idx"].to_numpy(), group["_val"].to_numpy(),
-                   color=color, s=22, zorder=3, label=label)
-
-    # Horizontal average lines per phase
-    for phase, avg_label in [("forward", "Forward avg"), ("backward", "Backward avg")]:
-        phase_vals = sampled.loc[sampled["sampled_phase"] == phase, "_val"]
-        if len(phase_vals) > 0:
-            avg = float(phase_vals.mean())
-            color = PHASE_COLORS[phase]
-            ax.axhline(y=avg, color=color, linestyle="--", linewidth=1.4,
-                       alpha=0.85, zorder=2, label=f"{avg_label} ({avg:.1f}%)")
+    for series, mask, col_key, label in [
+        (fwd_series, fwd_mask, "forward",  "Forward"),
+        (bwd_series, bwd_mask, "backward", "Backward"),
+    ]:
+        if mask.sum() == 0:
+            continue
+        color = PHASE_COLORS[col_key]
+        steps = df.loc[mask, "step_idx"].to_numpy()
+        vals  = series[mask].to_numpy()
+        ax.plot(steps, vals, color=color, linewidth=0.7, alpha=0.45, zorder=1)
+        ax.scatter(steps, vals, color=color, s=22, zorder=3, label=label)
+        avg = float(vals.mean())
+        ax.axhline(y=avg, color=color, linestyle="--", linewidth=1.4,
+                   alpha=0.85, zorder=2, label=f"{label} avg ({avg:.1f}%)")
 
     _draw_epoch_vlines(ax, epoch_step_ids)
 
@@ -299,16 +290,15 @@ def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
 
 def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
                   epoch_step_ids: List[int]) -> None:
-    """CPU utilisation plot."""
-    col = "cpu_util"
-    if col not in df.columns:
-        print(f"  5. util_cpu            -> [skip] column '{col}' not in CSV")
-        return
-
-    series = pd.to_numeric(df[col], errors="coerce")
+    """CPU utilisation plot — combines forward and backward samples."""
+    # Merge fwd and bwd CPU samples: prefer fwd when both exist for a step,
+    # fall back to bwd, giving a single value per sampled step.
+    fwd = pd.to_numeric(df.get("fwd_cpu_util", pd.Series(dtype=float)), errors="coerce")
+    bwd = pd.to_numeric(df.get("bwd_cpu_util", pd.Series(dtype=float)), errors="coerce")
+    series = fwd.combine_first(bwd)
     mask   = series.notna()
     if mask.sum() == 0:
-        print(f"  5. util_cpu            -> [skip] no sampled data for '{col}'")
+        print(f"  5. util_cpu            -> [skip] no sampled data for cpu_util")
         return
 
     sampled_steps = df.loc[mask, "step_idx"].to_numpy()
@@ -342,15 +332,12 @@ def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
 def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
                   epoch_step_ids: List[int]) -> None:
     """RAM utilisation plot — y-axis in GB, starting from 0."""
-    col = "ram_used_mb"
-    if col not in df.columns:
-        print(f"  6. util_ram            -> [skip] column '{col}' not in CSV")
-        return
-
-    series = pd.to_numeric(df[col], errors="coerce")
+    fwd = pd.to_numeric(df.get("fwd_ram_used_mb", pd.Series(dtype=float)), errors="coerce")
+    bwd = pd.to_numeric(df.get("bwd_ram_used_mb", pd.Series(dtype=float)), errors="coerce")
+    series = fwd.combine_first(bwd)
     mask   = series.notna()
     if mask.sum() == 0:
-        print(f"  6. util_ram            -> [skip] no sampled data for '{col}'")
+        print(f"  6. util_ram            -> [skip] no sampled data for ram_used_mb")
         return
 
     sampled_steps = df.loc[mask, "step_idx"].to_numpy()

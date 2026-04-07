@@ -6,7 +6,7 @@ from pathlib import Path
 
 script_dir = Path(__file__).parent.resolve()
 
-for name in ["plot_simple.py", "plot_spike.py", "plot_utils.py"]:
+for name in ["plot_simple.py", "plot_spike.py", "plot_utils.py", "plot_carbon.py", "plot_overhead.py"]:
     script = script_dir / name
     if not script.exists():
         print(f"[skip] {name} not found")

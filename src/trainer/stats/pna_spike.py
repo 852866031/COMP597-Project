@@ -1,19 +1,3 @@
-# src/trainer/stats/pna_spike.py
-"""
-PNATrainerSpikeStats — timing stats for GC spike analysis on the PNA workload.
-
-Runs two recording epochs (gc_on and gc_off) distinguished by set_run_type().
-During the gc_on epoch a gc.callbacks hook records gen-2-only GC events so that
-timing spikes can be correlated with full garbage collections.
-
-Three CSV files are written to output_dir/spike/ at the end of training:
-  spike/pna_spike_bs<N>_gc_on.csv        — one row per step (gc_on run)
-  spike/pna_spike_bs<N>_gc_off.csv       — one row per step (gc_off run)
-  spike/pna_spike_bs<N>_gc_events.csv    — one row per gen-2 GC event (gc_on only)
-
-Configuration is read from conf.trainer_stats_configs.codecarbon.*
-(run_num, project_name, output_dir) — same as pna_simple.
-"""
 from __future__ import annotations
 
 import csv
@@ -136,8 +120,9 @@ class PNATrainerSpikeStats(base.TrainerStats):
         self._last_loss: float = float("nan")
 
         # Accumulated per-step rows — one list per run
-        self._rows_gc_on:  List[_StepRow] = []
-        self._rows_gc_off: List[_StepRow] = []
+        self._rows_gc_on:     List[_StepRow] = []
+        self._rows_gc_off:    List[_StepRow] = []
+        self._rows_gc_manual: List[_StepRow] = []
 
         # GC event log — populated by the gc callback installed in start_train()
         self._gc_events: List[dict] = []
@@ -146,9 +131,10 @@ class PNATrainerSpikeStats(base.TrainerStats):
         self._gc_start_ns: Dict[int, int] = {}
 
         # Output file paths
-        self._gc_on_csv_path     = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_on.csv")
-        self._gc_off_csv_path    = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_off.csv")
-        self._gc_events_csv_path = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_events.csv")
+        self._gc_on_csv_path      = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_on.csv")
+        self._gc_off_csv_path     = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_off.csv")
+        self._gc_manual_csv_path  = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_manual.csv")
+        self._gc_events_csv_path  = os.path.join(output_dir, "spike", f"pna_spike_bs{batch_size}_gc_events.csv")
 
         logger.info(
             "PNATrainerSpikeStats: gc_on CSV  -> %s",
@@ -173,7 +159,7 @@ class PNATrainerSpikeStats(base.TrainerStats):
         Parameters
         ----------
         run_type:
-            Either ``"gc_on"`` or ``"gc_off"``.
+            One of ``"gc_on"``, ``"gc_off"``, or ``"gc_manual"``.
         """
         self._run_type = run_type
         self._step_idx = 0
@@ -305,6 +291,8 @@ class PNATrainerSpikeStats(base.TrainerStats):
 
         if self._run_type == "gc_on":
             self._rows_gc_on.append(row)
+        elif self._run_type == "gc_manual":
+            self._rows_gc_manual.append(row)
         else:
             self._rows_gc_off.append(row)
 
@@ -316,8 +304,9 @@ class PNATrainerSpikeStats(base.TrainerStats):
 
     def log_stats(self) -> None:
         """Write all CSV files once training is complete."""
-        self._write_csv(self._rows_gc_on, self._gc_on_csv_path)
-        self._write_csv(self._rows_gc_off, self._gc_off_csv_path)
+        self._write_csv(self._rows_gc_on,     self._gc_on_csv_path)
+        self._write_csv(self._rows_gc_off,    self._gc_off_csv_path)
+        self._write_csv(self._rows_gc_manual, self._gc_manual_csv_path)
         self._write_gc_csv()
 
     # ------------------------------------------------------------------

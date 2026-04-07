@@ -1,5 +1,13 @@
 SCRIPTS_DIR=$(readlink -f -n $(dirname $0))
 REPO_DIR=$(readlink -f -n ${SCRIPTS_DIR}/..)
+mv ${REPO_DIR}/src/trainer/stats/pna_carbon.py    ${REPO_DIR}/src/trainer/stats/pna_carbon.tmp
+mv ${REPO_DIR}/src/trainer/stats/pna_manual_gc.py ${REPO_DIR}/src/trainer/stats/pna_manual_gc.tmp
+
+# Restore files on exit, whether the job succeeds, fails, or is interrupted (Ctrl+C)
+trap '
+    mv ${REPO_DIR}/src/trainer/stats/pna_carbon.tmp    ${REPO_DIR}/src/trainer/stats/pna_carbon.py
+    mv ${REPO_DIR}/src/trainer/stats/pna_manual_gc.tmp ${REPO_DIR}/src/trainer/stats/pna_manual_gc.py
+' EXIT
 
 ### run PNA Simple Trainer
 ${SCRIPTS_DIR}/srun.sh \
