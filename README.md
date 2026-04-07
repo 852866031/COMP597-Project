@@ -238,39 +238,30 @@ Like the utilisation run, this measurement runs on top of the manual-GC trainer 
 
 ### 5.2 Results
 
-#### 5.2.1 Energy Results
+| | |
+|:---:|:---:|
+| ![Energy total](pna_result/carbon/plots/pna_carbon_bs256_energy_total.png) | ![Carbon total](pna_result/carbon/plots/pna_carbon_bs256_carbon_total.png) |
+| *Total energy consumed per step (mWh)* | *Total CO₂ emissions per step (µg CO₂eq)* |
 
 | | |
 |:---:|:---:|
-| ![Energy total](pna_result/carbon/plots/pna_carbon_bs256_energy_total.png) | ![Energy substep](pna_result/carbon/plots/pna_carbon_bs256_energy_substep.png) |
-| *Total energy consumed per step (mWh)* | *Energy breakdown: forward / backward / optimizer per step* |
+| ![Energy substep](pna_result/carbon/plots/pna_carbon_bs256_energy_substep.png) | ![Carbon substep](pna_result/carbon/plots/pna_carbon_bs256_carbon_substep.png) |
+| *Energy breakdown: forward / backward / optimizer per step* | *Emissions breakdown: forward / backward / optimizer per step* |
 
 | | |
 |:---:|:---:|
-| ![Energy hardware](pna_result/carbon/plots/pna_carbon_bs256_energy_hardware.png) | ![Pancake energy substep](pna_result/carbon/plots/pna_carbon_bs256_pancake_energy_substep.png) |
-| *Energy breakdown by hardware (CPU / GPU / RAM) per step* | *Average energy share by substep* |
-
-| |
-|:---:|
-| ![Pancake energy hardware](pna_result/carbon/plots/pna_carbon_bs256_pancake_energy_hardware.png) |
-| *Average energy share by hardware* |
-
-#### 5.2.2 Carbon Results
+| ![Pancake energy substep](pna_result/carbon/plots/pna_carbon_bs256_pancake_energy_substep.png) | ![Pancake carbon substep](pna_result/carbon/plots/pna_carbon_bs256_pancake_carbon_substep.png) |
+| *Average energy share by substep* | *Average emission share by substep* |
 
 | | |
 |:---:|:---:|
-| ![Carbon total](pna_result/carbon/plots/pna_carbon_bs256_carbon_total.png) | ![Carbon substep](pna_result/carbon/plots/pna_carbon_bs256_carbon_substep.png) |
-| *Total CO₂ emissions per step (µg CO₂eq)* | *Emissions breakdown: forward / backward / optimizer per step* |
+| ![Energy hardware](pna_result/carbon/plots/pna_carbon_bs256_energy_hardware.png) | ![Carbon hardware](pna_result/carbon/plots/pna_carbon_bs256_carbon_hardware.png) |
+| *Energy breakdown by hardware (CPU / GPU / RAM) per step* | *Emissions breakdown by hardware (CPU / GPU / RAM) per step* |
 
 | | |
 |:---:|:---:|
-| ![Carbon hardware](pna_result/carbon/plots/pna_carbon_bs256_carbon_hardware.png) | ![Pancake carbon substep](pna_result/carbon/plots/pna_carbon_bs256_pancake_carbon_substep.png) |
-| *Emissions breakdown by hardware (CPU / GPU / RAM) per step* | *Average emission share by substep* |
-
-| |
-|:---:|
-| ![Pancake carbon hardware](pna_result/carbon/plots/pna_carbon_bs256_pancake_carbon_hardware.png) |
-| *Average emission share by hardware* |
+| ![Pancake energy hardware](pna_result/carbon/plots/pna_carbon_bs256_pancake_energy_hardware.png) | ![Pancake carbon hardware](pna_result/carbon/plots/pna_carbon_bs256_pancake_carbon_hardware.png) |
+| *Average energy share by hardware* | *Average emission share by hardware* |
 
 ### 5.3 Discussion
 
