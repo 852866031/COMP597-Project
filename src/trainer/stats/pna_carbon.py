@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 
 import torch
 from codecarbon import OfflineEmissionsTracker
@@ -58,6 +59,14 @@ codecarbon.core.cpu.is_psutil_available = lambda: False
 logger = logging.getLogger(__name__)
 
 trainer_stats_name = "pna_carbon"
+
+# Minimum wall-clock nanoseconds between sampled steps.
+# Steps that start before this interval has elapsed since the last sampled
+# step are skipped entirely — no start_task / stop_task calls are made, so
+# CodeCarbon incurs zero per-step overhead for those steps.
+# 500 ms gives roughly one sampled step every 500 ms of wall-clock time,
+# matching the sampling cadence of pna_utils.py.
+_SAMPLE_INTERVAL_NS: int = 500_000_000  # 500 ms
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +213,13 @@ class PNACarbonStats(base.TrainerStats):
         # to avoid the "_active_task_emissions_at_start was None" CodeCarbon error.
         self._recording: bool = False
 
+        # Sampling gate — only open a CodeCarbon task window for steps that
+        # fall at least _SAMPLE_INTERVAL_NS after the previous sampled step.
+        # All other steps pass through every hook as no-ops, eliminating the
+        # 8 start_task / stop_task calls that drove the 17 % overhead.
+        self._last_sample_ns: int = 0
+        self._sampling_this_step: bool = False
+
         # Start both task-mode trackers.  Tasks are started/stopped inside the
         # training loop; the background threads just keep sampling power.
         # The warmup epoch is excluded by the _recording guard above.
@@ -261,13 +277,21 @@ class PNACarbonStats(base.TrainerStats):
 
     def start_step(self) -> None:
         self._step_idx += 1
+        # Default: do not open a task window for this step.
+        self._sampling_this_step = False
         if not self._recording:
             return
+        # Sampling gate: only open a task window if the interval has elapsed.
+        now_ns = time.perf_counter_ns()
+        if now_ns - self._last_sample_ns < _SAMPLE_INTERVAL_NS:
+            return
+        self._last_sample_ns = now_ns
+        self._sampling_this_step = True
         self._sync()
         self._step_tracker.start_task(task_name=self._step_task())
 
     def stop_step(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._step_tracker.stop_task(task_name=self._step_task())
@@ -275,13 +299,13 @@ class PNACarbonStats(base.TrainerStats):
     # --- forward -------------------------------------------------------
 
     def start_forward(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._substep_tracker.start_task(task_name=self._substep_task("fwd"))
 
     def stop_forward(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._substep_tracker.stop_task(task_name=self._substep_task("fwd"))
@@ -289,13 +313,13 @@ class PNACarbonStats(base.TrainerStats):
     # --- backward ------------------------------------------------------
 
     def start_backward(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._substep_tracker.start_task(task_name=self._substep_task("bwd"))
 
     def stop_backward(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._substep_tracker.stop_task(task_name=self._substep_task("bwd"))
@@ -303,13 +327,13 @@ class PNACarbonStats(base.TrainerStats):
     # --- optimizer -----------------------------------------------------
 
     def start_optimizer_step(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._substep_tracker.start_task(task_name=self._substep_task("opt"))
 
     def stop_optimizer_step(self) -> None:
-        if not self._recording:
+        if not self._sampling_this_step:
             return
         self._sync()
         self._substep_tracker.stop_task(task_name=self._substep_task("opt"))
