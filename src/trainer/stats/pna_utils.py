@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 trainer_stats_name = "pna_utils"
 
 # Minimum nanoseconds between utilisation samples (500 ms)
-_SAMPLE_INTERVAL_NS: int = 300_000_000
+_SAMPLE_INTERVAL_NS: int = 250_000_000
 
 
 # ---------------------------------------------------------------------------

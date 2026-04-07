@@ -246,12 +246,12 @@ def plot_pancake(df: pd.DataFrame, agg_df: Optional[pd.DataFrame],
 # ---------------------------------------------------------------------------
 
 def discover_steps_csvs(directory: Path) -> List[Path]:
-    """Look for simple/pna_simple_bs*.csv relative to directory."""
+    """Look for simple/pna_simple_bs512.csv relative to directory."""
     simple_dir = directory / "simple"
     if not simple_dir.is_dir():
         return []
     return sorted(
-        p for p in simple_dir.glob("pna_simple_bs*.csv")
+        p for p in simple_dir.glob("pna_simple_bs512.csv")
         if not p.name.endswith("_agg.csv")
     )
 
@@ -304,8 +304,8 @@ def main() -> None:
         csv_files = discover_steps_csvs(script_dir)
         if not csv_files:
             print(
-                f"No simple/pna_simple_bs*.csv found in {script_dir / 'simple'}.\n"
-                "Run with --steps /path/to/pna_simple_bs<N>.csv to specify files explicitly."
+                f"No simple/pna_simple_bs512.csv found in {script_dir / 'simple'}.\n"
+                "Run with --steps /path/to/pna_simple_bs512.csv to specify files explicitly."
             )
             sys.exit(0)
         print(f"Auto-discovered {len(csv_files)} steps CSV(s)")

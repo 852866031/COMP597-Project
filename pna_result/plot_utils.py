@@ -8,7 +8,7 @@ Usage
     python pna_result/plot_utils.py
 
 # Point at a specific steps CSV:
-    python pna_result/plot_utils.py --steps pna_result/utils/pna_utils_bs256_steps.csv
+    python pna_result/plot_utils.py --steps pna_result/utils/pna_utils_bs512_steps.csv
 
 Output
 ------
@@ -242,11 +242,11 @@ def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
 # ---------------------------------------------------------------------------
 
 def discover_steps_csvs(directory: Path) -> List[Path]:
-    """Find pna_utils step CSV files in utils/ subdir."""
+    """Find pna_utils step CSV files in utils/ subdir (bs512 only)."""
     utils_dir = directory / "utils"
     if not utils_dir.is_dir():
         return []
-    return sorted(utils_dir.glob("pna_utils_bs*_steps.csv"))
+    return sorted(utils_dir.glob("pna_utils_bs512_steps.csv"))
 
 
 def process_file(steps_path: Path) -> None:
@@ -293,7 +293,7 @@ def main() -> None:
         csv_files = discover_steps_csvs(script_dir)
         if not csv_files:
             print(
-                f"No pna_utils_bs*_steps.csv files found in {script_dir / 'utils'}.\n"
+                f"No pna_utils_bs512_steps.csv found in {script_dir / 'utils'}.\n"
                 "Run start-pna-utils.sh first."
             )
             sys.exit(0)
