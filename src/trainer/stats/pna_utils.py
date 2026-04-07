@@ -197,6 +197,19 @@ class PNAUtilsStats(base.TrainerStats):
             except Exception as exc:
                 logger.warning("PNAUtilsStats: pynvml init failed: %s", exc)
 
+        # Per-process psutil handle for CPU measurement.
+        # A single persistent Process object is required so that consecutive
+        # cpu_percent(interval=None) calls have a valid prior-measurement
+        # baseline (the first call on a brand-new object always returns 0.0).
+        self._psutil_proc = None
+        if _PSUTIL_AVAILABLE:
+            try:
+                self._psutil_proc = _psutil.Process(os.getpid())
+                # Warm-up call so the first real sample isn't always 0.0
+                self._psutil_proc.cpu_percent(interval=None)
+            except Exception as exc:
+                logger.warning("PNAUtilsStats: psutil Process init failed: %s", exc)
+
         if not _PSUTIL_AVAILABLE:
             logger.warning("PNAUtilsStats: psutil not installed; CPU/RAM util will be empty")
 
@@ -226,9 +239,13 @@ class PNAUtilsStats(base.TrainerStats):
                 logger.debug("PNAUtilsStats: GPU util sample failed: %s", exc)
 
         cpu_util: Optional[float] = None
-        if _PSUTIL_AVAILABLE:
+        if _PSUTIL_AVAILABLE and self._psutil_proc is not None:
             try:
-                cpu_util = float(_psutil.cpu_percent(interval=None))
+                # cpu_percent(interval=None) measures usage since the last call
+                # on this Process object — i.e. only this process, on its
+                # allocated core(s).  Values can exceed 100 % if multiple
+                # threads are active; with --cpus-per-task=1 that is unlikely.
+                cpu_util = float(self._psutil_proc.cpu_percent(interval=None))
             except Exception as exc:
                 logger.debug("PNAUtilsStats: CPU util sample failed: %s", exc)
 

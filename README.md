@@ -180,10 +180,12 @@ This manual-GC configuration is used as the **baseline** for the overhead compar
 The utilisation measurement (`--trainer_stats pna_utils`) runs on top of the measurement trainer (manual GC), adding non-intrusive hardware sampling at the boundary of each forward and backward pass:
 
 - **GPU utilisation (%)** — sampled via `pynvml` at `stop_forward` and `stop_backward`
-- **CPU utilisation (%)** — sampled via `psutil.cpu_percent(interval=None)` (non-blocking)
+- **CPU utilisation (%)** — sampled via `psutil.Process(os.getpid()).cpu_percent(interval=None)` — **per-process**, non-blocking
 - **RAM used (MiB)** — sampled via `psutil.virtual_memory().used`
 
 Each phase (forward and backward) has an **independent 500 ms sampling gate** — a sample is only taken if at least 500 ms have elapsed since the last sample for that phase. This prevents sampling overhead from accumulating on every step while still capturing the utilisation landscape at both phases independently.
+
+**CPU measurement design**: `start-pna-utils.sh` pins the job to a single CPU core (`--cpus-per-task=1` via a SLURM config override) and uses `psutil.Process().cpu_percent()` rather than the system-wide `psutil.cpu_percent()`. This gives a clean, directly interpretable measurement: 0–100% where 100% means our process is fully saturating the one allocated core. A persistent `Process` object is created at initialisation with a warm-up call so that the first real sample has a valid baseline.
 
 The training loop, timing measurements, and GC suppression are identical to the manual-GC run. Only hardware sampling is added.
 
@@ -194,18 +196,8 @@ The training loop, timing measurements, and GC suppression are identical to the 
 
 | | |
 |:---:|:---:|
-| ![Total time](pna_result/utils/plots/pna_utils_bs256_steps_total_time.png) | ![Breakdown](pna_result/utils/plots/pna_utils_bs256_steps_breakdown.png) |
-| *Total step time under manual GC + util sampling* | *Substep breakdown: forward / backward / optimizer* |
-
-| |
-|:---:|
-| ![Pancake](pna_result/utils/plots/pna_utils_bs256_steps_pancake.png) |
-| *Average time share per substep* |
-
-| | |
-|:---:|:---:|
 | ![GPU util](pna_result/utils/plots/pna_utils_bs256_steps_util_gpu.png) | ![CPU util](pna_result/utils/plots/pna_utils_bs256_steps_util_cpu.png) |
-| *GPU utilisation (%) — forward (blue) vs backward (orange)* | *CPU utilisation (%)* |
+| *GPU utilisation (%) — forward (blue) vs backward (orange), with per-phase averages* | *Per-process CPU utilisation (%) on the single allocated core* |
 
 | |
 |:---:|
@@ -214,15 +206,13 @@ The training loop, timing measurements, and GC suppression are identical to the 
 
 ### 4.3 Discussion
 
-**Step time and breakdown**: With GC pauses removed, step time is stable and the substep breakdown cleanly shows the backward pass dominating at ~55% of step time, consistent with the simple baseline. The pancake chart confirms that forward + backward together account for over 90% of step time, with the optimizer step negligible by comparison.
+**GPU utilisation**: The GPU utilisation plot shows the forward and backward phase samples as separate independent series, each with a horizontal average line. The key finding is that **GPU utilisation is consistently low across both phases** — well below what one would expect from a GPU-bound workload. This is characteristic of GNN workloads on sparse, irregular graphs: PNA's message passing operates over molecular graphs with highly variable node degrees and neighbourhood sizes, which leads to poor GPU occupancy. Sparse neighbourhood aggregation cannot be fully vectorised across a batch the way dense matrix multiplications can in CNN or Transformer workloads. The GPU repeatedly launches kernels over small, irregular neighbourhoods, leaving large portions of the SM compute capacity underutilised between kernel launches. The forward and backward phase averages are close to each other — any difference is within noise — confirming that both phases are similarly constrained by the sparse graph topology rather than by a structural difference in operation density.
 
-**GPU utilisation**: The GPU utilisation plot shows the forward and backward phase samples as separate independent series. The key finding is that **GPU utilisation is consistently low across both phases** — well below what one would expect from a GPU-bound workload. This is characteristic of GNN workloads on sparse, irregular graphs: PNA's message passing operates over molecular graphs with highly variable node degrees and neighbourhood sizes, which leads to poor GPU occupancy. Sparse neighbourhood aggregation cannot be fully vectorised across a batch the way dense matrix multiplications can in CNN or Transformer workloads. The GPU repeatedly launches kernels over small, irregular neighbourhoods, leaving large portions of the SM compute capacity underutilised between kernel launches. The forward and backward phases show very similar utilisation levels — any difference between them is within noise — confirming that both phases are similarly limited by the sparse graph computation pattern rather than by a difference in operation density.
+**CPU utilisation**: The per-process CPU plot directly reflects the training process's own activity on its single allocated core. Values are low and relatively flat across all steps. Because the job is pinned to one core (`--cpus-per-task=1`), the scale is unambiguous: 100% would mean that core is fully saturated by our process; the consistently low readings confirm that the training loop spends the vast majority of each step waiting on GPU kernel completions rather than executing Python code. The non-zero baseline reflects Python interpreter overhead, PyTorch CUDA dispatch calls, and DataLoader collation, all of which occur on the main CPU thread. The absence of any spike pattern in the CPU trace confirms that GC pauses — which would appear here as brief bursts of Python interpreter activity — have been successfully eliminated by the inter-epoch manual collection strategy.
 
-**CPU utilisation**: CPU utilisation is low and relatively flat. It is important to note that `psutil.cpu_percent()` reports the **system-wide average across all CPU cores**, not the utilisation of the specific core(s) the training process occupies. On a multi-core server node, this dilutes the apparent CPU load significantly. The low reported value therefore reflects both the fact that most cores are idle and that the training process itself spends most of its time waiting on GPU kernels rather than executing Python code. The non-zero CPU activity reflects Python interpreter overhead, PyTorch dispatcher activity, and DataLoader collation on the main thread.
+**RAM usage**: RAM usage is stable across steps with a gradual upward drift within each epoch and a step-down at epoch boundaries where `gc.collect(2)` reclaims accumulated short-lived batch objects. This is consistent with Python's generational GC under manual control: the between-epoch collections prevent runaway heap growth, while within an epoch, the younger generations accumulate object allocations incrementally. The stable plateau reached within each epoch confirms that the inter-epoch collection cadence is sufficient to prevent memory pressure over the full training run.
 
-**RAM usage**: RAM usage is stable across steps with a gradual upward drift. This is consistent with Python's generational GC under manual control: between-epoch `gc.collect(2)` calls prevent runaway heap growth, but within an epoch, short-lived batch objects accumulate incrementally in the younger generations. The stable plateau reached within each epoch confirms that the inter-epoch collection is sufficient to prevent memory pressure.
-
-**Connection to PNA workload characteristics**: The persistently low GPU utilisation across both phases is a defining characteristic of GNN workloads and distinguishes PNA sharply from dense workloads like CNNs or Transformers. PNA operates on molecular graphs where each node has a variable, often small neighbourhood — aggregating over 3–5 neighbours is common in PCQM4Mv2. These small, irregular neighbourhoods produce short, poorly-coalesced memory accesses and low arithmetic intensity per kernel launch, leaving the GPU underutilised despite the 64-layer depth. The low and flat CPU utilisation confirms that CUDA kernel execution time dominates the per-step budget regardless, and that the GC spikes observed in the simple run were a Python-side phenomenon that inflated step latency without raising GPU utilisation — the GPU was simply idle during GC pauses.
+**Connection to PNA workload characteristics**: The persistently low GPU utilisation across both phases is a defining characteristic of GNN workloads and distinguishes PNA sharply from dense workloads like CNNs or Transformers. PNA operates on molecular graphs where each node has a variable, often small neighbourhood — aggregating over 3–5 neighbours is common in PCQM4Mv2. These small, irregular neighbourhoods produce short, poorly-coalesced memory accesses and low arithmetic intensity per kernel launch, leaving the GPU underutilised despite the 64-layer depth. The correspondingly low and flat per-process CPU utilisation confirms that CUDA kernel execution time dominates the per-step budget: the training loop is neither CPU-bound nor GPU-saturated, but rather bottlenecked by the latency of many short, irregular GPU kernel launches over sparse graph neighbourhoods. This also explains the GC spikes observed in the simple run — those were pure Python-side pauses during which the GPU sat idle, inflating step latency without any corresponding rise in GPU utilisation.
 
 ---
 

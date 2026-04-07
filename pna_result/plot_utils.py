@@ -14,16 +14,13 @@ Output
 ------
 Plots are saved to  pna_result/utils/plots/
 
-Up to six plots are produced per CSV:
-  1. total_time.png    — total step execution time per step (bar chart)
-  2. breakdown.png     — stacked area execution time breakdown per step
-  3. pancake.png       — donut chart of mean time share per substep
-  4. util_gpu.png      — GPU utilisation (%) sampled over steps
-  5. util_cpu.png      — CPU utilisation (%) sampled over steps
-  6. util_ram.png      — RAM used (GB) sampled over steps
+Up to three plots are produced per CSV:
+  1. util_gpu.png      — GPU utilisation (%) sampled over steps, forward & backward
+  2. util_cpu.png      — per-process CPU utilisation (%) sampled over steps
+  3. util_ram.png      — RAM used (GB) sampled over steps
 
-Plots 4-6 are skipped when the respective column has no sampled data.
-Epoch boundaries are annotated with red dashed vertical lines on util plots.
+Plots are skipped when the respective column has no sampled data.
+Epoch boundaries are annotated with red dashed vertical lines.
 """
 from __future__ import annotations
 
@@ -43,14 +40,9 @@ import pandas as pd
 # Shared style constants
 # ---------------------------------------------------------------------------
 
-SUBSTEP_COLS   = ["forward_ms", "backward_ms", "optimizer_ms"]
-SUBSTEP_LABELS = ["Forward", "Backward", "Optimizer"]
-SUBSTEP_COLORS = ["#4C72B0", "#DD8452", "#55A868"]
-STEP_COLOR     = "#888888"
-
 EPOCH_LINE_COLOR = "#E63946"   # red for epoch boundary markers
 
-# Colours for sampled_phase dots on util plots
+# Colours for forward / backward GPU series
 PHASE_COLORS = {
     "forward":  "#4C72B0",   # blue   — sampled during forward pass
     "backward": "#DD8452",   # orange — sampled during backward pass
@@ -68,12 +60,6 @@ def _parse_meta(stem: str) -> dict:
 
 def _subtitle(meta: dict) -> str:
     return f"batch size {meta['batch_size']}"
-
-
-def _find_agg_csv(steps_path: Path) -> Optional[Path]:
-    """pna_utils_bs256_steps.csv  →  pna_utils_bs256_steps_agg.csv"""
-    candidate = steps_path.parent / (steps_path.stem + "_agg.csv")
-    return candidate if candidate.exists() else None
 
 
 def _out_dir(steps_path: Path) -> Path:
@@ -95,137 +81,6 @@ def _epoch_starts(df: pd.DataFrame) -> List[int]:
     return df.loc[changed, "step_idx"].tolist()
 
 
-# ---------------------------------------------------------------------------
-# Plot 1 — total execution time per step (bar chart)
-# ---------------------------------------------------------------------------
-
-def plot_total_time(df: pd.DataFrame, out_path: Path, meta: dict) -> None:
-    steps   = df["step_idx"].to_numpy()
-    step_ms = df["step_ms"].to_numpy()
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    fig.suptitle(
-        f"PNA Utils — Total Step Execution Time\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
-    )
-
-    ax.bar(steps, step_ms, width=1.0, color=STEP_COLOR, alpha=0.80)
-
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Time (ms)")
-    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  1. total_time  -> {out_path}")
-
-
-# ---------------------------------------------------------------------------
-# Plot 2 — execution time breakdown per step (stacked area)
-# ---------------------------------------------------------------------------
-
-def plot_breakdown(df: pd.DataFrame, out_path: Path, meta: dict) -> None:
-    steps   = df["step_idx"].to_numpy()
-    bottoms = np.zeros(len(df))
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    fig.suptitle(
-        f"PNA Utils — Execution Time Breakdown per Step\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
-    )
-
-    for col, label, color in zip(SUBSTEP_COLS, SUBSTEP_LABELS, SUBSTEP_COLORS):
-        vals = df[col].to_numpy()
-        ax.fill_between(steps, bottoms, bottoms + vals,
-                        alpha=0.80, color=color, label=label)
-        bottoms += vals
-
-    ax.plot(steps, df["step_ms"].to_numpy(), color=STEP_COLOR,
-            linewidth=0.7, alpha=0.45, label="Total step (raw)")
-
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Time (ms)")
-    ax.legend(fontsize=9, loc="upper right")
-    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  2. breakdown   -> {out_path}")
-
-
-# ---------------------------------------------------------------------------
-# Plot 3 — aggregate step time pancake (donut) chart
-# ---------------------------------------------------------------------------
-
-def plot_pancake(df: pd.DataFrame, agg_df: Optional[pd.DataFrame],
-                 out_path: Path, meta: dict) -> None:
-    if agg_df is not None:
-        row = agg_df.set_index("metric")["mean"]
-        try:
-            fwd_mean  = float(row["forward_ms"])
-            bwd_mean  = float(row["backward_ms"])
-            opt_mean  = float(row["optimizer_ms"])
-            step_mean = float(row["step_ms"])
-        except KeyError:
-            agg_df = None
-
-    if agg_df is None:
-        fwd_mean  = float(df["forward_ms"].mean())
-        bwd_mean  = float(df["backward_ms"].mean())
-        opt_mean  = float(df["optimizer_ms"].mean())
-        step_mean = float(df["step_ms"].mean())
-
-    other_mean = max(0.0, step_mean - fwd_mean - bwd_mean - opt_mean)
-
-    values = [fwd_mean, bwd_mean, opt_mean, other_mean]
-    labels = SUBSTEP_LABELS + ["Other"]
-    colors = SUBSTEP_COLORS + ["#d3d3d3"]
-
-    nonzero = [(v, l, c) for v, l, c in zip(values, labels, colors) if v > 0]
-    values, labels, colors = zip(*nonzero)
-
-    fig, ax = plt.subplots(figsize=(7, 7))
-    fig.suptitle(
-        f"PNA Utils — Average Step Time Breakdown\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
-    )
-
-    wedges, texts, autotexts = ax.pie(
-        values,
-        labels=None,
-        colors=colors,
-        autopct="%1.1f%%",
-        startangle=90,
-        pctdistance=0.78,
-        wedgeprops=dict(width=0.52, edgecolor="white", linewidth=1.5),
-    )
-
-    for at in autotexts:
-        at.set_fontsize(10)
-        at.set_fontweight("bold")
-
-    ax.text(0, 0, f"mean step\n{step_mean:.1f} ms",
-            ha="center", va="center", fontsize=11, fontweight="bold",
-            color="#333333")
-
-    legend_labels = [f"{l}  ({v:.1f} ms)" for l, v in zip(labels, values)]
-    ax.legend(wedges, legend_labels, loc="lower center",
-              bbox_to_anchor=(0.5, -0.08), ncol=2, fontsize=9, frameon=False)
-
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-    print(f"  3. pancake     -> {out_path}")
-
-
-# ---------------------------------------------------------------------------
-# Plots 4-6 — one hardware utilisation plot each
-# ---------------------------------------------------------------------------
-
 def _draw_epoch_vlines(ax, epoch_step_ids: List[int]) -> None:
     """Draw red dashed vertical lines at the start of each new epoch."""
     first = True
@@ -235,6 +90,10 @@ def _draw_epoch_vlines(ax, epoch_step_ids: List[int]) -> None:
                    label="Epoch start" if first else None)
         first = False
 
+
+# ---------------------------------------------------------------------------
+# Plot 1 — GPU utilisation (forward and backward as independent series)
+# ---------------------------------------------------------------------------
 
 def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
                   epoch_step_ids: List[int]) -> None:
@@ -249,7 +108,7 @@ def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
     bwd_mask = bwd_series.notna()
 
     if fwd_mask.sum() == 0 and bwd_mask.sum() == 0:
-        print(f"  4. util_gpu            -> [skip] no sampled data in fwd_gpu_util / bwd_gpu_util")
+        print(f"  1. util_gpu  -> [skip] no sampled data in fwd_gpu_util / bwd_gpu_util")
         return
 
     fig, ax = plt.subplots(figsize=(10, 4))
@@ -285,8 +144,12 @@ def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  4. util_gpu            -> {out_path}")
+    print(f"  1. util_gpu  -> {out_path}")
 
+
+# ---------------------------------------------------------------------------
+# Plot 2 — per-process CPU utilisation
+# ---------------------------------------------------------------------------
 
 def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
                   epoch_step_ids: List[int]) -> None:
@@ -298,7 +161,7 @@ def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
     series = fwd.combine_first(bwd)
     mask   = series.notna()
     if mask.sum() == 0:
-        print(f"  5. util_cpu            -> [skip] no sampled data for cpu_util")
+        print(f"  2. util_cpu  -> [skip] no sampled data for cpu_util")
         return
 
     sampled_steps = df.loc[mask, "step_idx"].to_numpy()
@@ -306,7 +169,7 @@ def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
 
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.suptitle(
-        f"PNA Utils — CPU Utilisation\n{_subtitle(meta)}",
+        f"PNA Utils — CPU Utilisation (per-process)\n{_subtitle(meta)}",
         fontsize=13, fontweight="bold",
     )
 
@@ -326,8 +189,12 @@ def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  5. util_cpu            -> {out_path}")
+    print(f"  2. util_cpu  -> {out_path}")
 
+
+# ---------------------------------------------------------------------------
+# Plot 3 — RAM utilisation
+# ---------------------------------------------------------------------------
 
 def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
                   epoch_step_ids: List[int]) -> None:
@@ -337,7 +204,7 @@ def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
     series = fwd.combine_first(bwd)
     mask   = series.notna()
     if mask.sum() == 0:
-        print(f"  6. util_ram            -> [skip] no sampled data for ram_used_mb")
+        print(f"  3. util_ram  -> [skip] no sampled data for ram_used_mb")
         return
 
     sampled_steps = df.loc[mask, "step_idx"].to_numpy()
@@ -367,7 +234,7 @@ def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
-    print(f"  6. util_ram            -> {out_path}")
+    print(f"  3. util_ram  -> {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -386,7 +253,7 @@ def process_file(steps_path: Path) -> None:
     print(f"\nProcessing: {steps_path.name}")
 
     df = pd.read_csv(steps_path)
-    required = {"step_idx", "step_ms", "forward_ms", "backward_ms", "optimizer_ms"}
+    required = {"step_idx"}
     missing = required - set(df.columns)
     if missing:
         print(f"  [skip] missing columns: {missing}")
@@ -396,19 +263,11 @@ def process_file(steps_path: Path) -> None:
     out  = _out_dir(steps_path)
     stem = steps_path.stem
 
-    agg_path = _find_agg_csv(steps_path)
-    agg_df   = pd.read_csv(agg_path) if agg_path else None
-    if agg_df is None:
-        print("  [info] no matching agg CSV — pancake will use step means")
-
     epoch_starts = _epoch_starts(df)
 
-    plot_total_time(df,           out / f"{stem}_total_time.png",  meta)
-    plot_breakdown( df,           out / f"{stem}_breakdown.png",   meta)
-    plot_pancake(   df, agg_df,   out / f"{stem}_pancake.png",     meta)
-    plot_util_gpu(  df,           out / f"{stem}_util_gpu.png",    meta, epoch_starts)
-    plot_util_cpu(  df,           out / f"{stem}_util_cpu.png",    meta, epoch_starts)
-    plot_util_ram(  df,           out / f"{stem}_util_ram.png",    meta, epoch_starts)
+    plot_util_gpu(df, out / f"{stem}_util_gpu.png", meta, epoch_starts)
+    plot_util_cpu(df, out / f"{stem}_util_cpu.png", meta, epoch_starts)
+    plot_util_ram(df, out / f"{stem}_util_ram.png", meta, epoch_starts)
 
 
 def main() -> None:
