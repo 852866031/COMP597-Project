@@ -76,6 +76,7 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
 class _StepRow:
     run_num:          int
     project_name:     str
+    epoch:            int
     step_idx:         int
     timestamp_s:      float   # wall-clock time at step end
     step_ms:          float
@@ -83,6 +84,9 @@ class _StepRow:
     backward_ms:      float
     optimizer_ms:     float
     loss:             float
+    batch_num_graphs: int     # number of graphs in this batch
+    batch_num_nodes:  int     # total nodes across all graphs
+    batch_num_edges:  int     # total edges across all graphs
 
 
 # ---------------------------------------------------------------------------
@@ -129,8 +133,9 @@ class PNATrainerSimpleStats(base.TrainerStats):
         os.makedirs(self.output_dir, exist_ok=True)
         os.makedirs(os.path.join(output_dir, "simple"), exist_ok=True)
 
-        # Step counter
-        self._step_idx: int = 0
+        # Step and epoch counters
+        self._step_idx: int      = 0
+        self._current_epoch: int = 0
 
         # Timers (wall-clock, nanosecond precision)
         self._t_step      = utils.RunningTimer()
@@ -140,6 +145,11 @@ class PNATrainerSimpleStats(base.TrainerStats):
 
         # Last loss seen (updated by log_loss)
         self._last_loss: float = float("nan")
+
+        # Last batch shape seen (updated by log_batch)
+        self._last_num_graphs: int = 0
+        self._last_num_nodes:  int = 0
+        self._last_num_edges:  int = 0
 
         # Accumulated per-step rows (flushed to CSV in log_stats)
         self._rows: List[_StepRow] = []
@@ -168,6 +178,9 @@ class PNATrainerSimpleStats(base.TrainerStats):
     # ------------------------------------------------------------------
     # TrainerStats interface
     # ------------------------------------------------------------------
+
+    def set_epoch(self, epoch: int) -> None:
+        self._current_epoch = epoch
 
     def start_train(self) -> None:
         pass
@@ -235,6 +248,22 @@ class PNATrainerSimpleStats(base.TrainerStats):
         except Exception:
             self._last_loss = float("nan")
 
+    def log_batch(self, batch) -> None:
+        """Cache the PyG batch shape for inclusion in the CSV row.
+
+        Reads num_graphs, num_nodes, and num_edges from the PyTorch Geometric
+        Batch object.  Called by the trainer immediately before log_step().
+        """
+        try:
+            self._last_num_graphs = int(batch.num_graphs)
+            self._last_num_nodes  = int(batch.num_nodes)
+            # edge_index shape: [2, num_edges]
+            self._last_num_edges  = int(batch.edge_index.size(1))
+        except Exception:
+            self._last_num_graphs = 0
+            self._last_num_nodes  = 0
+            self._last_num_edges  = 0
+
     def log_step(self) -> None:
         """Snapshot timers after each step and queue a CSV row."""
         # Convert ns -> ms for readability
@@ -244,21 +273,28 @@ class PNATrainerSimpleStats(base.TrainerStats):
         optimizer_ms = self._t_optimizer.get_last() / 1e6
 
         row = _StepRow(
-            run_num      = self.run_num,
-            project_name = self.project_name,
-            step_idx     = self._step_idx,
-            timestamp_s  = time.time(),
-            step_ms      = step_ms,
-            forward_ms   = forward_ms,
-            backward_ms  = backward_ms,
-            optimizer_ms = optimizer_ms,
-            loss         = self._last_loss,
+            run_num          = self.run_num,
+            project_name     = self.project_name,
+            epoch            = self._current_epoch,
+            step_idx         = self._step_idx,
+            timestamp_s      = time.time(),
+            step_ms          = step_ms,
+            forward_ms       = forward_ms,
+            backward_ms      = backward_ms,
+            optimizer_ms     = optimizer_ms,
+            loss             = self._last_loss,
+            batch_num_graphs = self._last_num_graphs,
+            batch_num_nodes  = self._last_num_nodes,
+            batch_num_edges  = self._last_num_edges,
         )
         self._rows.append(row)
 
         logger.debug(
-            "step %d | step=%.2f ms | fwd=%.2f ms | bwd=%.2f ms | opt=%.2f ms | loss=%.6f",
-            self._step_idx, step_ms, forward_ms, backward_ms, optimizer_ms, self._last_loss,
+            "step %d | step=%.2f ms | fwd=%.2f ms | bwd=%.2f ms | opt=%.2f ms"
+            " | loss=%.6f | graphs=%d nodes=%d edges=%d",
+            self._step_idx, step_ms, forward_ms, backward_ms, optimizer_ms,
+            self._last_loss, self._last_num_graphs, self._last_num_nodes,
+            self._last_num_edges,
         )
 
     def log_stats(self) -> None:

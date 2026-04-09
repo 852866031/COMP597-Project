@@ -1,29 +1,25 @@
 #!/usr/bin/env python3
 """
-plot_batchsize.py — compare PNA metrics across batch sizes 64, 256, and 1024.
+plot_batchsize.py — compare PNA metrics across batch sizes 512, 1024, 2048, and 4096.
 
-All three batch sizes must be present; the script exits with an error listing
+All batch sizes must be present; the script exits with an error listing
 every missing file rather than silently skipping.
 
-Sources required (9 files total — 3 per batch size):
-  pna_result/utils/pna_utils_bs{N}_steps.csv
+Sources required (8 files total — 2 per batch size):
+  pna_result/utils/pna_utils_bs{N}_wk*_steps.csv
       Step-level hardware utilisation samples from PNAUtilsStats.
 
-  pna_result/carbon/pna_carbon_bs{N}_step-steps.csv
-      Per-step energy data from PNACarbonStats (CodeCarbon task rows).
-
-  pna_result/carbon/pna_carbon_bs{N}_substep-substeps.csv
-      Per-substep energy data from PNACarbonStats (forward / backward /
-      optimizer).  Only sampled steps appear here (interval-gate policy);
-      the per-epoch sums therefore reflect measured samples rather than
-      the full epoch.
+  pna_result/carbon/pna_carbon_bs{N}_wk*_steps.csv
+      Per-step energy data from PNACarbonStats.  Energy columns are empty for
+      steps that did not close a 500 ms measurement window; non-empty rows hold
+      accumulated energy for the window.
 
 Output — pna_result/plots/
 ------
   1. bs_gpu_util.png        — avg GPU utilisation (%) across all epochs, per batch size
   2. bs_cpu_util.png        — avg CPU utilisation (%) across all epochs, per batch size (per-process)
-  3. bs_energy_total.png    — mean per-epoch total energy (mWh) averaged across all epochs, per batch size
-  4. bs_energy_substep.png  — clustered bar: x = substep (fwd/bwd/opt), clusters = batch sizes, mean per-epoch energy (mWh)
+  3. bs_energy_total.png    — avg energy per epoch (mWh), per batch size
+  4. bs_energy_hardware.png — clustered bar: x = hardware (cpu/gpu/ram), clusters = batch sizes
 
 Usage
 -----
@@ -31,7 +27,6 @@ Usage
 """
 from __future__ import annotations
 
-import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -46,7 +41,7 @@ import pandas as pd
 # Constants
 # ---------------------------------------------------------------------------
 
-BATCH_SIZES: List[int] = [64, 256, 512, 1024]
+BATCH_SIZES: List[int] = [512, 1024, 2048, 4096]
 BS_COLORS:   List[str] = ["#4C72B0", "#DD8452", "#55A868", "#8338EC"]  # blue / orange / green / purple
 BS_LABELS:   List[str] = [f"bs{n}" for n in BATCH_SIZES]
 
@@ -54,19 +49,20 @@ KWH_TO_MWH = 1_000.0     # kWh → mWh
 
 
 # ---------------------------------------------------------------------------
-# File path helpers
+# File path helpers (glob-based — match any _wk* worker count)
 # ---------------------------------------------------------------------------
 
-def _utils_csv(result_dir: Path, bs: int) -> Path:
-    return result_dir / "utils" / f"pna_utils_bs{bs}_steps.csv"
+def _glob_one(directory: Path, pattern: str) -> Optional[Path]:
+    matches = sorted(directory.glob(pattern))
+    return matches[0] if matches else None
 
 
-def _step_csv(result_dir: Path, bs: int) -> Path:
-    return result_dir / "carbon" / f"pna_carbon_bs{bs}_step-steps.csv"
+def _utils_csv(result_dir: Path, bs: int) -> Optional[Path]:
+    return _glob_one(result_dir / "utils", f"pna_utils_bs{bs}_wk*_steps.csv")
 
 
-def _substep_csv(result_dir: Path, bs: int) -> Path:
-    return result_dir / "carbon" / f"pna_carbon_bs{bs}_substep-substeps.csv"
+def _step_csv(result_dir: Path, bs: int) -> Optional[Path]:
+    return _glob_one(result_dir / "carbon", f"pna_carbon_bs{bs}_wk*_steps.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -74,16 +70,18 @@ def _substep_csv(result_dir: Path, bs: int) -> Path:
 # ---------------------------------------------------------------------------
 
 def check_files(result_dir: Path) -> None:
-    missing: List[Path] = []
+    missing: List[str] = []
     for bs in BATCH_SIZES:
-        for path in [_utils_csv(result_dir, bs),
-                     _step_csv(result_dir, bs),
-                     _substep_csv(result_dir, bs)]:
-            if not path.exists():
-                missing.append(path)
+        checks = [
+            (_utils_csv(result_dir, bs), f"utils/pna_utils_bs{bs}_wk*_steps.csv"),
+            (_step_csv(result_dir, bs),  f"carbon/pna_carbon_bs{bs}_wk*_steps.csv"),
+        ]
+        for path, pattern in checks:
+            if path is None:
+                missing.append(f"{result_dir}/{pattern}")
     if missing:
         print("ERROR: the following required CSV files are missing.")
-        print("Run the start-pna-*.sh scripts with -bs 64, -bs 256, and -bs 1024 first.\n")
+        print("Run the start-pna-*.sh scripts with -bs 512, -bs 1024, -bs 2048, and -bs 4096 first.\n")
         for p in missing:
             print(f"  {p}")
         sys.exit(1)
@@ -97,49 +95,41 @@ def _load_utils(path: Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def _parse_step_task(task_name: str):
-    m = re.match(r"e(\d+)_step_(\d+)", str(task_name))
-    return (int(m.group(1)), int(m.group(2))) if m else (None, None)
-
-
-def _parse_substep_task(task_name: str):
-    m = re.match(r"e(\d+)_(fwd|bwd|opt)_(\d+)", str(task_name))
-    return (int(m.group(1)), m.group(2), int(m.group(3))) if m else (None, None, None)
-
-
 def _enrich_step_df(df: pd.DataFrame) -> pd.DataFrame:
-    parsed = df["task_name"].apply(
-        lambda t: pd.Series(_parse_step_task(t), index=["epoch", "step_idx"])
-    )
+    """Add window_steps and _per_step normalised energy columns."""
     df = df.copy()
-    df["epoch"]    = parsed["epoch"].astype("Int64")
-    df["step_idx"] = parsed["step_idx"].astype("Int64")
-    return df.dropna(subset=["epoch", "step_idx"]).reset_index(drop=True)
-
-
-def _enrich_substep_df(df: pd.DataFrame) -> pd.DataFrame:
-    parsed = df["task_name"].apply(
-        lambda t: pd.Series(_parse_substep_task(t), index=["epoch", "phase", "step_idx"])
-    )
-    df = df.copy()
-    df["epoch"]    = parsed["epoch"].astype("Int64")
-    df["phase"]    = parsed["phase"]
-    df["step_idx"] = parsed["step_idx"].astype("Int64")
-    return df.dropna(subset=["epoch", "phase", "step_idx"]).reset_index(drop=True)
+    df["step_idx"] = pd.to_numeric(df["step_idx"], errors="coerce").astype("Int64")
+    df["epoch"]    = pd.to_numeric(df["epoch"],    errors="coerce").astype("Int64")
+    energy_cols = ("energy_consumed", "cpu_energy", "gpu_energy", "ram_energy", "emissions")
+    for col in energy_cols:
+        df[col] = pd.to_numeric(df.get(col, pd.Series(dtype=float)), errors="coerce")
+    df = df.dropna(subset=["step_idx"]).sort_values("step_idx").reset_index(drop=True)
+    measured_pos = df.index[df["energy_consumed"].notna()].tolist()
+    window_steps_arr = np.full(len(df), np.nan)
+    prev = -1
+    for pos in measured_pos:
+        window_steps_arr[pos] = pos - prev
+        prev = pos
+    df["window_steps"] = window_steps_arr
+    for col in energy_cols:
+        df[f"{col}_per_step"] = df[col] / df["window_steps"]
+    return df
 
 
 def load_all(result_dir: Path):
-    """Return (utils_data, step_data, substep_data) dicts keyed by batch size."""
-    utils_data:   Dict[int, pd.DataFrame] = {}
-    step_data:    Dict[int, pd.DataFrame] = {}
-    substep_data: Dict[int, pd.DataFrame] = {}
+    """Return (utils_data, step_data) dicts keyed by batch size."""
+    utils_data: Dict[int, pd.DataFrame] = {}
+    step_data:  Dict[int, pd.DataFrame] = {}
 
     for bs in BATCH_SIZES:
-        utils_data[bs]   = _load_utils(_utils_csv(result_dir, bs))
-        step_data[bs]    = _enrich_step_df(pd.read_csv(_step_csv(result_dir, bs)))
-        substep_data[bs] = _enrich_substep_df(pd.read_csv(_substep_csv(result_dir, bs)))
+        utils_path = _utils_csv(result_dir, bs)
+        step_path  = _step_csv(result_dir, bs)
+        assert utils_path and step_path, \
+            f"Missing CSV for bs={bs} (run check_files first)"
+        utils_data[bs] = _load_utils(utils_path)
+        step_data[bs]  = _enrich_step_df(pd.read_csv(step_path))
 
-    return utils_data, step_data, substep_data
+    return utils_data, step_data
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +210,8 @@ def plot_gpu_util_avg(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> No
     avgs: List[float] = []
     for bs in BATCH_SIZES:
         df  = utils_data[bs]
-        fwd = pd.to_numeric(df.get("fwd_gpu_util", pd.Series(dtype=float)), errors="coerce")
-        bwd = pd.to_numeric(df.get("bwd_gpu_util", pd.Series(dtype=float)), errors="coerce")
-        combined = pd.concat([fwd, bwd]).dropna()
-        avgs.append(float(combined.mean()) if not combined.empty else float("nan"))
+        col = pd.to_numeric(df.get("gpu_util", pd.Series(dtype=float)), errors="coerce").dropna()
+        avgs.append(float(col.mean()) if not col.empty else float("nan"))
 
     fig, ax = plt.subplots(figsize=(7, 5))
     fig.suptitle(
@@ -245,10 +233,8 @@ def plot_cpu_util_avg(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> No
     avgs: List[float] = []
     for bs in BATCH_SIZES:
         df  = utils_data[bs]
-        fwd = pd.to_numeric(df.get("fwd_cpu_util", pd.Series(dtype=float)), errors="coerce")
-        bwd = pd.to_numeric(df.get("bwd_cpu_util", pd.Series(dtype=float)), errors="coerce")
-        combined = pd.concat([fwd, bwd]).dropna()
-        avgs.append(float(combined.mean()) if not combined.empty else float("nan"))
+        col = pd.to_numeric(df.get("cpu_util", pd.Series(dtype=float)), errors="coerce").dropna()
+        avgs.append(float(col.mean()) if not col.empty else float("nan"))
 
     fig, ax = plt.subplots(figsize=(7, 5))
     fig.suptitle(
@@ -268,109 +254,78 @@ def plot_cpu_util_avg(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> No
 
 def plot_energy_total(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
     avgs: List[float] = []
+    epoch_counts: List[int] = []
     for bs in BATCH_SIZES:
         df = step_data[bs]
-        avgs.append(float(df.groupby("epoch")["energy_consumed"].sum().mean()) * KWH_TO_MWH)
+        measured = df[df["energy_consumed"].notna()]
+        if measured.empty or "epoch" not in measured.columns:
+            avgs.append(float("nan"))
+            epoch_counts.append(0)
+            continue
+        # Sum all measurement-window energy within each epoch, then average epochs
+        epoch_totals = measured.groupby("epoch")["energy_consumed"].sum()
+        avgs.append(float(epoch_totals.mean()) * KWH_TO_MWH)
+        epoch_counts.append(int(epoch_totals.count()))
 
     fig, ax = plt.subplots(figsize=(7, 5))
     fig.suptitle(
-        "PNA — Total Sampled Energy vs Batch Size\n"
-        "mean per epoch · CodeCarbon (mWh)",
+        "PNA — Avg Energy per Epoch vs Batch Size\n"
+        "mean over all epochs · CodeCarbon (mWh)",
         fontsize=13, fontweight="bold",
     )
 
-    _simple_bars(ax, avgs, "Energy (mWh)", fmt="{:.3f}")
+    _simple_bars(ax, avgs, "Energy per Epoch (mWh)", fmt="{:.3f}",
+                 epoch_counts=epoch_counts)
     _save(fig, out_path, "bs_energy_total")
 
 
 # ---------------------------------------------------------------------------
-# Plots 4–6 — per-phase energy aggregated across all epochs
+# Plot 4 — per-step avg energy breakdown by hardware component
 # ---------------------------------------------------------------------------
 
-_PHASES       = ["fwd", "bwd", "opt"]
-_PHASE_LABELS = {"fwd": "Forward", "bwd": "Backward", "opt": "Optimizer"}
+_HW_COMPONENTS = ["cpu", "gpu", "ram"]
+_HW_LABELS     = {"cpu": "CPU", "gpu": "GPU", "ram": "RAM"}
+_HW_COLORS     = {"cpu": "#E76F51", "gpu": "#2A9D8F", "ram": "#8338EC"}
 
 
-def plot_energy_substep(substep_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
-    """Clustered bar chart: x = substep (fwd/bwd/opt), clusters = batch sizes.
+def plot_energy_hardware(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    """Clustered bar chart: x = hardware component (cpu/gpu/ram), clusters = batch sizes."""
+    avgs: Dict[str, List[float]] = {hw: [] for hw in _HW_COMPONENTS}
+    for bs in BATCH_SIZES:
+        df = step_data[bs]
+        for hw in _HW_COMPONENTS:
+            col = f"{hw}_energy_per_step"
+            vals = df[col].dropna() if col in df.columns else pd.Series(dtype=float)
+            avgs[hw].append(float(vals.mean()) * KWH_TO_MWH if not vals.empty else float("nan"))
 
-    Each bar is split into two stacked portions:
-      - Bottom (hatched //): CPU energy contribution
-      - Top    (solid):      non-CPU energy (GPU + RAM)
-    """
-    # avgs_total / avgs_cpu[phase][bs_index] = mean per-epoch energy (mWh)
-    avgs_total: Dict[str, List[float]] = {}
-    avgs_cpu:   Dict[str, List[float]] = {}
-    for phase in _PHASES:
-        avgs_total[phase] = []
-        avgs_cpu[phase]   = []
-        for bs in BATCH_SIZES:
-            df   = substep_data[bs]
-            filt = df[df["phase"] == phase]
-            by_epoch = filt.groupby("epoch")[["energy_consumed", "cpu_energy"]].sum()
-            avgs_total[phase].append(float(by_epoch["energy_consumed"].mean()) * KWH_TO_MWH)
-            avgs_cpu[phase].append(float(by_epoch["cpu_energy"].mean()) * KWH_TO_MWH)
-
-    n_phases = len(_PHASES)
-    n_bs     = len(BATCH_SIZES)
-    x_base   = np.arange(n_phases)
-    offsets  = (np.arange(n_bs) - (n_bs - 1) / 2.0) * (0.8 / n_bs)
-    width    = 0.8 / n_bs
+    n_hw = len(_HW_COMPONENTS)
+    n_bs = len(BATCH_SIZES)
+    x_base  = np.arange(n_hw)
+    offsets = (np.arange(n_bs) - (n_bs - 1) / 2.0) * (0.8 / n_bs)
+    width   = 0.8 / n_bs
 
     fig, ax = plt.subplots(figsize=(9, 5))
     fig.suptitle(
-        "PNA — Substep Energy vs Batch Size\nmean per epoch · CodeCarbon (mWh)",
+        "PNA — Per-Step Avg Energy by Hardware vs Batch Size\n"
+        "mean over measurement windows · CodeCarbon (mWh)",
         fontsize=13, fontweight="bold",
     )
 
-    # Minimum hatched-region height to print a label (6% of tallest bar)
-    y_max = max(avgs_total[phase][j] for phase in _PHASES for j in range(n_bs))
-    min_label_height = y_max * 0.06
-
     for i, (bs, color, label) in enumerate(zip(BATCH_SIZES, BS_COLORS, BS_LABELS)):
-        xs       = x_base + offsets[i]
-        cpu_vals = [avgs_cpu[phase][i]                        for phase in _PHASES]
-        top_vals = [avgs_total[phase][i] - avgs_cpu[phase][i] for phase in _PHASES]
-        tot_vals = [avgs_total[phase][i]                      for phase in _PHASES]
-
-        # CPU portion — hatched
-        ax.bar(xs, cpu_vals, width=width, color=color, alpha=0.85,
-               hatch="//", edgecolor="white", linewidth=0.5,
-               label=label, zorder=3)
-        # Non-CPU portion — solid, stacked on top of CPU portion
-        ax.bar(xs, top_vals, width=width, color=color, alpha=0.85,
-               bottom=cpu_vals, edgecolor="white", linewidth=0.5,
-               zorder=3)
-
-        # Annotate CPU % centred inside the hatched portion
-        for x, cpu, tot in zip(xs, cpu_vals, tot_vals):
-            if tot == 0 or cpu < min_label_height:
-                continue
-            pct = cpu / tot * 100
-            ax.text(x, cpu / 2, f"{pct:.0f}%",
-                    ha="center", va="center",
-                    fontsize=6.5, fontweight="bold", color="black",
-                    zorder=5)
+        xs   = x_base + offsets[i]
+        vals = [avgs[hw][i] for hw in _HW_COMPONENTS]
+        ax.bar(xs, vals, width=width, color=color, alpha=0.85,
+               label=label, zorder=3, edgecolor="white", linewidth=0.5)
 
     ax.set_xticks(x_base)
-    ax.set_xticklabels([_PHASE_LABELS[p] for p in _PHASES], fontsize=11)
-    ax.set_xlabel("Substep")
-    ax.set_ylabel("Energy (mWh)")
-
-    # Batch-size legend (colour swatches)
-    bs_legend = ax.legend(fontsize=9, loc="upper right")
-
-    # Add a second legend entry explaining the hatch pattern
-    import matplotlib.patches as mpatches
-    cpu_patch = mpatches.Patch(facecolor="#aaaaaa", hatch="//",
-                               edgecolor="white", label="CPU portion (hatched)")
-    ax.legend(handles=[*bs_legend.legend_handles, cpu_patch],
-              fontsize=9, loc="upper right")
-
+    ax.set_xticklabels([_HW_LABELS[hw] for hw in _HW_COMPONENTS], fontsize=11)
+    ax.set_xlabel("Hardware Component")
+    ax.set_ylabel("Energy per step (mWh)")
+    ax.legend(fontsize=9, loc="upper right")
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
-    _save(fig, out_path, "bs_energy_substep")
+    _save(fig, out_path, "bs_energy_hardware")
 
 
 # ---------------------------------------------------------------------------
@@ -389,14 +344,14 @@ def main() -> None:
     check_files(script_dir)
 
     print("Loading CSVs …")
-    utils_data, step_data, substep_data = load_all(script_dir)
+    utils_data, step_data = load_all(script_dir)
     print("Done.\n")
 
     print("Generating plots:")
-    plot_gpu_util_avg(utils_data,    out_dir / "bs_gpu_util.png")
-    plot_cpu_util_avg(utils_data,    out_dir / "bs_cpu_util.png")
-    plot_energy_total(step_data,     out_dir / "bs_energy_total.png")
-    plot_energy_substep(substep_data, out_dir / "bs_energy_substep.png")
+    plot_gpu_util_avg(utils_data,  out_dir / "bs_gpu_util.png")
+    plot_cpu_util_avg(utils_data,  out_dir / "bs_cpu_util.png")
+    plot_energy_total(step_data,   out_dir / "bs_energy_total.png")
+    plot_energy_hardware(step_data, out_dir / "bs_energy_hardware.png")
 
     print("\nDone.")
 

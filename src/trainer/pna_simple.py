@@ -115,7 +115,8 @@ class PNATrainer(base.Trainer):
         for i, batch in enumerate(self.loader):
             if record:
                 self.stats.start_step()
-
+            if hasattr(self.stats, "set_epoch"):
+                self.stats.set_epoch(epoch)
             loss, descr = self.step(i, epoch, batch, model_kwargs)
 
             if record:
@@ -126,6 +127,8 @@ class PNATrainer(base.Trainer):
                     self.save_checkpoint(i)
                     self.stats.stop_save_checkpoint()
 
+                if hasattr(self.stats, "log_batch"):
+                    self.stats.log_batch(batch)
                 self.stats.log_loss(loss)
                 self.stats.log_step()
 

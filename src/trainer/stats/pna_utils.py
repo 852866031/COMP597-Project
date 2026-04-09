@@ -3,13 +3,14 @@
 PNAUtilsStats — hardware utilisation stats for the PNA workload.
 
 Timing + GPU/CPU/RAM utilisation are recorded per step.
-Utilisation is sampled at most once every 500 ms; steps that fall inside
-a sampling gap get empty fields for those columns.
+Utilisation is sampled at most once every 500 ms (shared gate across
+stop_forward and stop_backward); steps that fall inside a sampling gap
+get empty util fields.  No fwd/bwd distinction is recorded.
 
-Two CSV files are written to output_dir/carbon/ at the end of training:
+Two CSV files are written to output_dir/utils/ at the end of training:
 
-  pna_utils_bs<N>_steps.csv      — one row per training step
-  pna_utils_bs<N>_steps_agg.csv  — mean + quantiles per metric
+  pna_utils_bs<N>_wk<M>_steps.csv      — one row per training step
+  pna_utils_bs<N>_wk<M>_steps_agg.csv  — mean + quantiles per metric
 
 Configuration is read from conf.trainer_stats_configs.codecarbon.*
 (run_num, project_name, output_dir).
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 trainer_stats_name = "pna_utils"
 
 # Minimum nanoseconds between utilisation samples (500 ms)
-_SAMPLE_INTERVAL_NS: int = 250_000_000
+_SAMPLE_INTERVAL_NS: int = 500_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -89,22 +90,19 @@ def construct_trainer_stats(conf: config.Config, **kwargs) -> base.TrainerStats:
 
 @dataclass
 class _StepRow:
-    run_num:          int
-    project_name:     str
-    epoch:            int
-    step_idx:         int
-    timestamp_s:      float
-    step_ms:          float
-    forward_ms:       float
-    backward_ms:      float
-    optimizer_ms:     float
-    loss:             float
-    fwd_gpu_util:     Optional[float]  # % GPU util sampled at stop_forward
-    fwd_cpu_util:     Optional[float]  # % CPU util sampled at stop_forward
-    fwd_ram_used_mb:  Optional[float]  # RAM MiB       sampled at stop_forward
-    bwd_gpu_util:     Optional[float]  # % GPU util sampled at stop_backward
-    bwd_cpu_util:     Optional[float]  # % CPU util sampled at stop_backward
-    bwd_ram_used_mb:  Optional[float]  # RAM MiB       sampled at stop_backward
+    run_num:      int
+    project_name: str
+    epoch:        int
+    step_idx:     int
+    timestamp_s:  float
+    step_ms:      float
+    forward_ms:   float
+    backward_ms:  float
+    optimizer_ms: float
+    loss:         float
+    gpu_util:     Optional[float]  # % GPU util sampled at stop_forward or stop_backward
+    cpu_util:     Optional[float]  # % CPU util sampled at stop_forward or stop_backward
+    ram_used_mb:  Optional[float]  # RAM MiB       sampled at stop_forward or stop_backward
 
 
 # ---------------------------------------------------------------------------
@@ -184,13 +182,12 @@ class PNAUtilsStats(base.TrainerStats):
         self._steps_csv_path     = os.path.join(carbon_dir, f"{stem}_steps.csv")
         self._steps_agg_csv_path = os.path.join(carbon_dir, f"{stem}_steps_agg.csv")
 
-        # ---------- utilisation sampling state — independent per phase ----------
-        # Each phase has its own 500 ms gate so forward and backward can both
-        # fire in the same step without interfering with each other.
-        self._last_fwd_sample_ts_ns: int = 0
-        self._last_bwd_sample_ts_ns: int = 0
-        self._fwd_util: Tuple[Optional[float], Optional[float], Optional[float]] = (None, None, None)
-        self._bwd_util: Tuple[Optional[float], Optional[float], Optional[float]] = (None, None, None)
+        # ---------- utilisation sampling state — shared interval ----------
+        # A single 500 ms gate is shared across stop_forward and stop_backward.
+        # Whichever fires first within a window captures the sample for that step;
+        # no fwd/bwd distinction is recorded.
+        self._last_sample_ts_ns: int = 0
+        self._util: Tuple[Optional[float], Optional[float], Optional[float]] = (None, None, None)
 
         # pynvml handle (None if CUDA unavailable or pynvml not installed)
         self._nvml_handle = None
@@ -266,21 +263,13 @@ class PNAUtilsStats(base.TrainerStats):
 
         return (gpu_util, cpu_util, ram_used_mb)
 
-    def _maybe_sample_fwd(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """Sample for the forward phase if 500 ms have elapsed since the last forward sample."""
+    def _maybe_sample(self) -> None:
+        """Sample if 500 ms have elapsed since the last sample; store on self._util."""
         now_ns = time.perf_counter_ns()
-        if now_ns - self._last_fwd_sample_ts_ns < _SAMPLE_INTERVAL_NS:
-            return (None, None, None)
-        self._last_fwd_sample_ts_ns = now_ns
-        return self._sample_hw()
-
-    def _maybe_sample_bwd(self) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-        """Sample for the backward phase if 500 ms have elapsed since the last backward sample."""
-        now_ns = time.perf_counter_ns()
-        if now_ns - self._last_bwd_sample_ts_ns < _SAMPLE_INTERVAL_NS:
-            return (None, None, None)
-        self._last_bwd_sample_ts_ns = now_ns
-        return self._sample_hw()
+        if now_ns - self._last_sample_ts_ns < _SAMPLE_INTERVAL_NS:
+            return
+        self._last_sample_ts_ns = now_ns
+        self._util = self._sample_hw()
 
     # ------------------------------------------------------------------
     # TrainerStats interface
@@ -299,8 +288,7 @@ class PNAUtilsStats(base.TrainerStats):
     # --- step ----------------------------------------------------------
 
     def start_step(self) -> None:
-        self._fwd_util = (None, None, None)
-        self._bwd_util = (None, None, None)
+        self._util = (None, None, None)
         self._sync()
         self._step_idx += 1
         self._t_step.start()
@@ -318,10 +306,7 @@ class PNAUtilsStats(base.TrainerStats):
     def stop_forward(self) -> None:
         self._sync()
         self._t_forward.stop()
-        sample = self._maybe_sample_fwd()
-        if sample != (None, None, None):
-            self._fwd_util = sample
-        
+        self._maybe_sample()
 
     # --- backward ------------------------------------------------------
 
@@ -332,10 +317,7 @@ class PNAUtilsStats(base.TrainerStats):
     def stop_backward(self) -> None:
         self._sync()
         self._t_backward.stop()
-        sample = self._maybe_sample_bwd()
-        if sample != (None, None, None):
-            self._bwd_util = sample
-        
+        self._maybe_sample()
 
     # --- optimizer -----------------------------------------------------
 
@@ -371,36 +353,31 @@ class PNAUtilsStats(base.TrainerStats):
         backward_ms  = self._t_backward.get_last()  / 1e6
         optimizer_ms = self._t_optimizer.get_last() / 1e6
 
-        fwd_gpu, fwd_cpu, fwd_ram = self._fwd_util
-        bwd_gpu, bwd_cpu, bwd_ram = self._bwd_util
+        gpu, cpu, ram = self._util
 
         row = _StepRow(
-            run_num          = self.run_num,
-            project_name     = self.project_name,
-            epoch            = self._current_epoch,
-            step_idx         = self._step_idx,
-            timestamp_s      = time.time(),
-            step_ms          = step_ms,
-            forward_ms       = forward_ms,
-            backward_ms      = backward_ms,
-            optimizer_ms     = optimizer_ms,
-            loss             = self._last_loss,
-            fwd_gpu_util     = fwd_gpu,
-            fwd_cpu_util     = fwd_cpu,
-            fwd_ram_used_mb  = fwd_ram,
-            bwd_gpu_util     = bwd_gpu,
-            bwd_cpu_util     = bwd_cpu,
-            bwd_ram_used_mb  = bwd_ram,
+            run_num      = self.run_num,
+            project_name = self.project_name,
+            epoch        = self._current_epoch,
+            step_idx     = self._step_idx,
+            timestamp_s  = time.time(),
+            step_ms      = step_ms,
+            forward_ms   = forward_ms,
+            backward_ms  = backward_ms,
+            optimizer_ms = optimizer_ms,
+            loss         = self._last_loss,
+            gpu_util     = gpu,
+            cpu_util     = cpu,
+            ram_used_mb  = ram,
         )
         self._rows.append(row)
 
         logger.debug(
             "step %d | step=%.2f ms | fwd=%.2f ms | bwd=%.2f ms | opt=%.2f ms"
-            " | loss=%.6f | fwd_gpu=%s%% bwd_gpu=%s%%",
+            " | loss=%.6f | gpu=%s%%",
             self._step_idx, step_ms, forward_ms, backward_ms, optimizer_ms,
             self._last_loss,
-            f"{fwd_gpu:.1f}" if fwd_gpu is not None else "—",
-            f"{bwd_gpu:.1f}" if bwd_gpu is not None else "—",
+            f"{gpu:.1f}" if gpu is not None else "—",
         )
 
     def log_stats(self) -> None:
@@ -449,15 +426,8 @@ class PNAUtilsStats(base.TrainerStats):
             "loss":         [r.loss         for r in self._rows],
         }
 
-        for col, attr in [
-            ("fwd_gpu_util",    "fwd_gpu_util"),
-            ("fwd_cpu_util",    "fwd_cpu_util"),
-            ("fwd_ram_used_mb", "fwd_ram_used_mb"),
-            ("bwd_gpu_util",    "bwd_gpu_util"),
-            ("bwd_cpu_util",    "bwd_cpu_util"),
-            ("bwd_ram_used_mb", "bwd_ram_used_mb"),
-        ]:
-            vals = [getattr(r, attr) for r in self._rows if getattr(r, attr) is not None]
+        for col in ("gpu_util", "cpu_util", "ram_used_mb"):
+            vals = [getattr(r, col) for r in self._rows if getattr(r, col) is not None]
             if vals:
                 metrics[col] = vals
 

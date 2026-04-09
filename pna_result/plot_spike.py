@@ -44,13 +44,12 @@ STEP_COLOR     = "#888888"
 # Discovery helpers
 # ---------------------------------------------------------------------------
 
-def discover_gc_on_csv(directory: Path) -> Optional[Path]:
-    """Find pna_spike_bs512_wk*_gc_on.csv in spike/ subdir."""
+def discover_gc_on_csvs(directory: Path):
+    """Find all pna_spike_bs*_wk*_gc_on.csv files in spike/ subdir."""
     spike_dir = directory / "spike"
     if not spike_dir.is_dir():
-        return None
-    matches = sorted(spike_dir.glob("pna_spike_bs512_wk*_gc_on.csv"))
-    return matches[0] if matches else None
+        return []
+    return sorted(spike_dir.glob("pna_spike_bs*_wk*_gc_on.csv"))
 
 
 def find_gc_off_csv(gc_on_path: Path) -> Optional[Path]:
@@ -214,13 +213,8 @@ def plot_breakdown_gc_off(df_gc_off: pd.DataFrame, out_path: Path,
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
-    script_dir = Path(__file__).parent.resolve()
-
-    gc_on_path = discover_gc_on_csv(script_dir)
-    if gc_on_path is None:
-        print("No pna_spike_bs512_wk*_gc_on.csv found in spike/. Run start-pna-spike.sh first.")
-        sys.exit(0)
+def process_gc_on(gc_on_path: Path) -> None:
+    print(f"\nProcessing: {gc_on_path.name}")
 
     gc_off_path    = find_gc_off_csv(gc_on_path)
     gc_events_path = find_gc_events_csv(gc_on_path)
@@ -253,6 +247,19 @@ def main() -> None:
         plot_breakdown_gc_off(df_gc_off, out_dir / f"{base_stem}_breakdown_gc_off.png", meta, y_max)
     else:
         print("  [skip] no gc_off CSV found — skipping gc_off plot")
+
+
+def main() -> None:
+    script_dir = Path(__file__).parent.resolve()
+
+    gc_on_paths = discover_gc_on_csvs(script_dir)
+    if not gc_on_paths:
+        print("No pna_spike_bs*_wk*_gc_on.csv found in spike/. Run start-pna-spike.sh first.")
+        sys.exit(0)
+
+    print(f"Auto-discovered {len(gc_on_paths)} gc_on CSV(s)")
+    for gc_on_path in gc_on_paths:
+        process_gc_on(gc_on_path)
 
     print("\nDone.")
 

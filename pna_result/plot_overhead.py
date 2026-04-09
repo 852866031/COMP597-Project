@@ -18,10 +18,10 @@ Usage
 
     # Override individual CSV paths:
     python pna_result/plot_overhead.py \\
-        --simple  pna_result/simple/pna_simple_bs512.csv \\
-        --gc-off  pna_result/spike/pna_spike_bs512_gc_off.csv \\
-        --utils   pna_result/utils/pna_utils_bs512_steps.csv \\
-        --carbon  pna_result/carbon/pna_carbon_bs512_step-steps.csv
+        --simple  pna_result/simple/pna_simple_bs4096.csv \\
+        --gc-off  pna_result/spike/pna_spike_bs4096_gc_off.csv \\
+        --utils   pna_result/utils/pna_utils_bs4096_steps.csv \\
+        --carbon  pna_result/carbon/pna_carbon_bs4096_step-steps.csv
 """
 from __future__ import annotations
 
@@ -53,42 +53,16 @@ BAR_LABELS = [
     "carbon-measure",
 ]
 
-P95 = 0.95
-
-
 # ---------------------------------------------------------------------------
-# P95 helpers
+# Mean helper
 # ---------------------------------------------------------------------------
 
-def _p95_ms(series: pd.Series) -> float:
-    """Return the 95th-percentile value of a numeric series (in ms)."""
+def _mean_ms(series: pd.Series) -> float:
+    """Return the mean of a numeric series (in ms) using all data points."""
     clean = pd.to_numeric(series, errors="coerce").dropna()
     if clean.empty:
         return float("nan")
-    return float(clean.quantile(P95))
-
-
-def _avg_p95_ms(series: pd.Series, window: int = 50) -> float:
-    """
-    Average of a rolling p95 — gives a stable single-number summary that
-    is robust to one-off outliers while still capturing sustained latency.
-
-    Strategy: split the series into non-overlapping windows of *window*
-    steps, compute the p95 of each window, then average those.
-    Falls back to a global p95 when there are fewer rows than *window*.
-    """
-    clean = pd.to_numeric(series, errors="coerce").dropna().reset_index(drop=True)
-    if clean.empty:
-        return float("nan")
-    if len(clean) < window:
-        return float(clean.quantile(P95))
-
-    n_windows = len(clean) // window
-    p95_per_window = [
-        float(clean.iloc[i * window: (i + 1) * window].quantile(P95))
-        for i in range(n_windows)
-    ]
-    return float(np.mean(p95_per_window))
+    return float(clean.mean())
 
 
 # ---------------------------------------------------------------------------
@@ -104,11 +78,11 @@ def _discover(directory: Path, subdir: str, pattern: str) -> Optional[Path]:
 
 
 def discover_simple(directory: Path) -> Optional[Path]:
-    return _discover(directory, "simple", "pna_simple_bs512_wk*.csv")
+    return _discover(directory, "simple", "pna_simple_bs4096_wk*.csv")
 
 
 def discover_gc_manual(directory: Path) -> Optional[Path]:
-    return _discover(directory, "manual", "pna_manual_gc_bs512_wk*.csv")
+    return _discover(directory, "manual", "pna_manual_gc_bs4096_wk*.csv")
 
 
 def discover_utils(directory: Path) -> Optional[Path]:
@@ -117,65 +91,58 @@ def discover_utils(directory: Path) -> Optional[Path]:
     if not d.is_dir():
         return None
     matches = sorted(
-        p for p in d.glob("pna_utils_bs512_wk*_steps.csv")
+        p for p in d.glob("pna_utils_bs4096_wk*_steps.csv")
         if "_agg" not in p.name
     )
     return matches[0] if matches else None
 
 
 def discover_carbon(directory: Path) -> Optional[Path]:
-    # Prefer the timing CSV (has proper CUDA-synced step_ms like all other stats).
-    # Fall back to the CodeCarbon step CSV for backwards compatibility.
-    timing = _discover(directory, "carbon", "pna_carbon_bs512_wk*_timing.csv")
-    if timing:
-        return timing
-    return _discover(directory, "carbon", "pna_carbon_bs512_wk*_step-steps.csv")
+    return _discover(directory, "carbon", "pna_carbon_bs4096_wk*_steps.csv")
 
 
 # ---------------------------------------------------------------------------
 # Per-workload latency extraction
 # ---------------------------------------------------------------------------
 
-def load_simple_p95(path: Path) -> float:
+def load_simple_mean(path: Path) -> float:
     df = pd.read_csv(path)
     if "step_ms" not in df.columns:
         raise ValueError(f"'step_ms' column not found in {path}")
-    return _avg_p95_ms(df["step_ms"])
+    return _mean_ms(df["step_ms"])
 
 
-def load_gc_manual_p95(path: Path) -> float:
+def load_gc_manual_mean(path: Path) -> float:
     df = pd.read_csv(path)
     if "step_ms" not in df.columns:
         raise ValueError(f"'step_ms' column not found in {path}")
-    return _avg_p95_ms(df["step_ms"])
+    return _mean_ms(df["step_ms"])
 
 
-def load_utils_p95(path: Path) -> float:
+def load_utils_mean(path: Path) -> float:
     df = pd.read_csv(path)
     if "step_ms" not in df.columns:
         raise ValueError(f"'step_ms' column not found in {path}")
-    return _avg_p95_ms(df["step_ms"])
+    return _mean_ms(df["step_ms"])
 
 
-def load_carbon_p95(path: Path) -> float:
-    """Load carbon step latency.
+def load_carbon_mean(path: Path) -> float:
+    """Load carbon step latency (mean over all steps).
 
-    Prefers pna_carbon_bs*_timing.csv which has a proper CUDA-synced
-    ``step_ms`` column (same as every other stats CSV).  Falls back to
-    the CodeCarbon step CSV where ``duration`` (seconds) is used instead,
-    but note that path measures only inside the task window and misses
-    the CodeCarbon setup/teardown overhead at step boundaries.
+    Uses the CUDA-synced ``step_ms`` column written by PNACarbonStats.
+    Falls back to CodeCarbon's ``duration`` column (seconds) when step_ms
+    is absent.
     """
     df = pd.read_csv(path)
     if "step_ms" in df.columns:
-        return _avg_p95_ms(df["step_ms"])
+        return _mean_ms(df["step_ms"])
     if "duration" in df.columns:
         mask = df["task_name"].astype(str).str.match(r"e\d+_step_\d+")
         step_rows = df[mask]
         if step_rows.empty:
             raise ValueError(f"No step rows found in {path}")
         step_ms = pd.to_numeric(step_rows["duration"], errors="coerce") * 1000.0
-        return _avg_p95_ms(step_ms)
+        return _mean_ms(step_ms)
     raise ValueError(f"Neither 'step_ms' nor 'duration' column found in {path}")
 
 
@@ -196,7 +163,7 @@ def plot_overhead(values: list, labels: list, colors: list,
     fig, ax = plt.subplots(figsize=(8, 5))
     fig.suptitle(
         f"PNA — Measurement Overhead Comparison\n"
-        f"avg p95 step latency · batch size {batch_size}",
+        f"mean step latency (all steps) · batch size {batch_size}",
         fontsize=13, fontweight="bold",
     )
 
@@ -229,12 +196,12 @@ def plot_overhead(values: list, labels: list, colors: list,
     if baseline is not None and len(vals) > 2:
         ax.axhline(y=baseline, color=cols[1], linestyle="--",
                    linewidth=1.2, alpha=0.7, zorder=2,
-                   label=f"baseline ({baseline:.1f} ms)")
+                   label=f"baseline mean ({baseline:.1f} ms)")
         ax.legend(fontsize=9, loc="upper left")
 
     ax.set_xticks(x)
     ax.set_xticklabels(lbls, fontsize=10)
-    ax.set_ylabel("Avg p95 Step Latency (ms)")
+    ax.set_ylabel("Mean Step Latency (ms)")
     ax.set_ylim(0, max(vals) * 1.28)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
@@ -261,7 +228,7 @@ def main() -> None:
     parser.add_argument("--utils", metavar="CSV",
                         help="Path to utils pna_utils_bs*_steps.csv")
     parser.add_argument("--carbon", metavar="CSV",
-                        help="Path to carbon pna_carbon_bs*_step-steps.csv")
+                        help="Path to carbon pna_carbon_bs*_wk*_steps.csv")
     args = parser.parse_args()
 
     script_dir = Path(__file__).parent.resolve()
@@ -275,10 +242,10 @@ def main() -> None:
     }
 
     loaders = {
-        "simple":    load_simple_p95,
-        "gc_manual": load_gc_manual_p95,
-        "utils":     load_utils_p95,
-        "carbon":    load_carbon_p95,
+        "simple":    load_simple_mean,
+        "gc_manual": load_gc_manual_mean,
+        "utils":     load_utils_mean,
+        "carbon":    load_carbon_mean,
     }
 
     print("Sources:")
@@ -291,7 +258,7 @@ def main() -> None:
         else:
             try:
                 v = loaders[key](path)
-                print(f"  {key:8s} -> {path.name}  (avg p95 = {v:.2f} ms)")
+                print(f"  {key:8s} -> {path.name}  (mean = {v:.2f} ms)")
                 values.append(v)
                 # Try to extract batch size from any file name
                 import re
