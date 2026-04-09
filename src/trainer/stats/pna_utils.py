@@ -276,7 +276,22 @@ class PNAUtilsStats(base.TrainerStats):
     # ------------------------------------------------------------------
 
     def set_epoch(self, epoch: int) -> None:
-        """Called by the trainer at the start of each measured epoch."""
+        """Called by the trainer at the start of each step.
+
+        When the epoch changes, force a utilisation sample for the last step
+        of the previous epoch if it didn't get one (interval not reached),
+        then reset the sampling timer so the new epoch's first step gets a
+        fresh sample.
+        """
+        if epoch != self._current_epoch and self._rows:
+            last = self._rows[-1]
+            if last.gpu_util is None:
+                gpu, cpu, ram = self._sample_hw()
+                last.gpu_util    = gpu
+                last.cpu_util    = cpu
+                last.ram_used_mb = ram
+            # Reset timer so the first step of the new epoch will sample
+            self._last_sample_ts_ns = 0
         self._current_epoch = epoch
 
     def start_train(self) -> None:
@@ -296,6 +311,7 @@ class PNAUtilsStats(base.TrainerStats):
     def stop_step(self) -> None:
         self._sync()
         self._t_step.stop()
+        self._maybe_sample()
 
     # --- forward -------------------------------------------------------
 

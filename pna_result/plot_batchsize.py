@@ -254,18 +254,15 @@ def plot_cpu_util_avg(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> No
 
 def plot_energy_total(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
     avgs: List[float] = []
-    epoch_counts: List[int] = []
     for bs in BATCH_SIZES:
         df = step_data[bs]
         measured = df[df["energy_consumed"].notna()]
         if measured.empty or "epoch" not in measured.columns:
             avgs.append(float("nan"))
-            epoch_counts.append(0)
             continue
         # Sum all measurement-window energy within each epoch, then average epochs
         epoch_totals = measured.groupby("epoch")["energy_consumed"].sum()
         avgs.append(float(epoch_totals.mean()) * KWH_TO_MWH)
-        epoch_counts.append(int(epoch_totals.count()))
 
     fig, ax = plt.subplots(figsize=(7, 5))
     fig.suptitle(
@@ -274,8 +271,7 @@ def plot_energy_total(step_data: Dict[int, pd.DataFrame], out_path: Path) -> Non
         fontsize=13, fontweight="bold",
     )
 
-    _simple_bars(ax, avgs, "Energy per Epoch (mWh)", fmt="{:.3f}",
-                 epoch_counts=epoch_counts)
+    _simple_bars(ax, avgs, "Energy per Epoch (mWh)", fmt="{:.3f}")
     _save(fig, out_path, "bs_energy_total")
 
 
