@@ -66,12 +66,12 @@ The intermediate sizes (1024, 2048) are included to show the **trend** when vary
 
 We build up instrumentation in layers, starting from a raw observation of the workload and progressively adding controlled measurements:
 
-| # | Measurement | What It Records | GC Control |
+| # | Measurement | Purpose | What It Records |
 |:-:|:---|:---|:---|
-| 1 | **Raw measurement**  | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). | GC on (default) |
-| 2 | **GC-controlled e2e Baseline** | | Same timing as raw, but represents a **clean baseline**: automatic GC disabled during training, full gen-2 sweep forced between epochs. Foundation for all subsequent measurements. | Manual (between epochs) |
-| 4 | **Hardware utilisation**  | Built on (2). Adds GPU util (`pynvml`), per-process CPU util (`psutil`), and RAM usage, sampled at 500 ms intervals. | Manual (between epochs) |
-| 5 | **Energy and carbon** | Built on (2). Adds per-step energy (CPU/GPU/RAM kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. | Manual (between epochs) |
+| 1 | **Raw measurement** | Capture the workload as-is with default GC, revealing latency spikes and batch-shape effects. | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). |
+| 2 | **GC-controlled e2e baseline** | Establish a clean baseline free of GC noise. Automatic GC disabled during training; full gen-2 sweep forced between epochs. Foundation for measurements 3 and 4. | Same step & substep timing as raw, but without GC-induced variability. |
+| 3 | **Hardware utilisation** | Quantify GPU, CPU, and memory usage across batch sizes. Built on (2). | GPU util (`pynvml`), per-process CPU util (`psutil`), RAM usage. Sampled at 500 ms intervals. |
+| 4 | **Energy and carbon** | Measure per-step energy consumption and CO₂ emissions. Built on (2). | CPU/GPU/RAM energy breakdown (kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. |
 
 Each layer motivates the next: the raw measurement reveals GC spikes → the spike experiment confirms GC as the cause → manual GC creates a clean baseline → utilisation and energy measurements build on that baseline without GC noise.
 
