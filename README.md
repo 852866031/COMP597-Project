@@ -66,15 +66,15 @@ The intermediate sizes (1024, 2048) are included to show the **trend** when vary
 
 We build up instrumentation in layers, starting from a raw observation of the workload and progressively adding controlled measurements:
 
-**1. Raw measurement** (`pna_simple`) — The first pass captures the workload as-is, with Python's garbage collector running at default settings. CUDA-synchronised wall-clock timers record per-step and per-substep (forward, backward, optimizer) durations. At bs4096, batch shape metadata (num_graphs, num_nodes, num_edges) is also recorded to correlate step time with graph composition. This is the measurement that reveals the GC spike pattern, and motivates the next step.
+| # | Measurement | Module | What It Records | GC Control |
+|:-:|:---|:---|:---|:---|
+| 1 | **Raw measurement** | `pna_simple` | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). | GC on (default) |
+| 2 | **GC spike attribution** | `pna_spike` | Two back-to-back runs: GC **on** with gen-2 event logging, then GC **off**. Isolates GC as the source of latency spikes. | On, then off |
+| 3 | **GC-controlled e2e** | `pna_manual_gc` | Same timing as raw, but with a **clean baseline**: automatic GC disabled during training, full gen-2 sweep forced between epochs. Foundation for all subsequent measurements. | Manual (between epochs) |
+| 4 | **Hardware utilisation** | `pna_utils` | Built on (3). Adds GPU util (`pynvml`), per-process CPU util (`psutil`), and RAM usage, sampled at 500 ms intervals. | Manual (between epochs) |
+| 5 | **Energy and carbon** | `pna_carbon` | Built on (3). Adds per-step energy (CPU/GPU/RAM kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. | Manual (between epochs) |
 
-**2. GC spike attribution** (`pna_spike`) — A diagnostic experiment to confirm that the spikes observed in the raw measurement are caused by garbage collection. Two back-to-back runs are performed: one with GC **on** plus gen-2 event logging (via `gc.callbacks`), and one with GC **off** (`gc.disable()`). Comparing the two traces isolates GC as the sole source of latency variability.
-
-**3. GC-controlled end-to-end measurement** (`pna_manual_gc`) — With GC confirmed as the spike source, this configuration establishes a **clean baseline**. Automatic GC is disabled during training and a full gen-2 sweep is forced between epochs, keeping GC pauses outside any measurement window while preventing unbounded heap growth. This manual-GC strategy is used as the foundation for all subsequent measurements.
-
-**4. Hardware utilisation** (`pna_utils`) — Built on top of the GC-controlled baseline, this adds GPU utilisation sampling (via `pynvml`), per-process CPU utilisation (via `psutil`), and RAM usage. Samples are taken at 500 ms intervals to minimise overhead while capturing the utilisation landscape at each step.
-
-**5. Energy and carbon** (`pna_carbon`) — Also built on the GC-controlled baseline. Records CUDA-synced substep timing plus per-step energy consumption (CPU, GPU, RAM breakdown in kWh) and CO₂-equivalent emissions, measured by CodeCarbon's `OfflineEmissionsTracker` in task mode with 500 ms measurement windows.
+Each layer motivates the next: the raw measurement reveals GC spikes → the spike experiment confirms GC as the cause → manual GC creates a clean baseline → utilisation and energy measurements build on that baseline without GC noise.
 
 All measurement types add less than 0.3% overhead to step latency (see [Section 7](#7-measurement-overhead)), so the numbers they report are representative of the uninstrumented workload.
 
