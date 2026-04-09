@@ -42,6 +42,7 @@ ${SCRIPTS_DIR}/srun.sh \
     --data pna_dataset \
     --model_configs.pna.epochs ${EPOCHS} \
     --model_configs.pna.batch_size ${BS} \
+    --model_configs.pna.num_workers 2 \
     --trainer_stats pna_spike \
     --trainer_stats_configs.codecarbon.run_num 1 \
     --trainer_stats_configs.codecarbon.project_name PNA \

@@ -159,26 +159,30 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Run all PNA experiments, skipping any whose output CSV already exists.\n"
-            "Use --force BS [BS ...] to rerun specific batch sizes unconditionally."
+            "Use --force BS [BS ...] to rerun specific batch sizes, or --force all to rerun everything."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--force",
         metavar="BS",
-        type=int,
         nargs="+",
         default=[],
         help=(
             "Batch size(s) to rerun unconditionally, e.g. --force 512 or "
-            "--force 512 1024.  Affects all experiments that include these sizes."
+            "--force 512 1024.  Use --force all to rerun everything."
         ),
     )
     args = parser.parse_args()
 
-    forced: set[int] = set(args.force)
-    if forced:
-        print(f"Forced batch sizes: {sorted(forced)}\n")
+    force_all = "all" in args.force
+    forced: set[int] = set()
+    if force_all:
+        print("Forcing ALL experiments to rerun.\n")
+    else:
+        forced = {int(x) for x in args.force if x != "all"}
+        if forced:
+            print(f"Forced batch sizes: {sorted(forced)}\n")
 
     for exp in EXPERIMENTS:
         print(f"{'=' * 52}")
@@ -186,10 +190,10 @@ def main() -> None:
         print(f"{'=' * 52}")
         for bs in exp["batch_sizes"]:
             epochs = _epochs(bs)
-            if bs not in forced and exp["done_fn"](bs):
+            if not force_all and bs not in forced and exp["done_fn"](bs):
                 print(f"  [skip] bs={bs:>4}  ({epochs:>2} epochs) — output already exists")
                 continue
-            reason = "forced" if bs in forced else "output missing"
+            reason = "forced" if (force_all or bs in forced) else "output missing"
             print(f"  [run ] bs={bs:>4}  ({epochs:>2} epochs) — {reason}")
             _run(exp["script"], bs)
         print()

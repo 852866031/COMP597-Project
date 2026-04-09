@@ -368,12 +368,12 @@ def plot_pancake(df: pd.DataFrame, agg_df: Optional[pd.DataFrame],
 # ---------------------------------------------------------------------------
 
 def discover_steps_csvs(directory: Path) -> List[Path]:
-    """Find all pna_simple_bs*_wk*.csv files across all batch sizes."""
+    """Find all pna_simple_bs*_wk2.csv files across all batch sizes."""
     simple_dir = directory / "simple"
     if not simple_dir.is_dir():
         return []
     return sorted(
-        p for p in simple_dir.glob("pna_simple_bs*_wk*.csv")
+        p for p in simple_dir.glob("pna_simple_bs*_wk2.csv")
         if not p.name.endswith("_agg.csv")
     )
 
@@ -507,7 +507,7 @@ def main() -> None:
         csv_files = discover_steps_csvs(script_dir)
         if not csv_files:
             print(
-                f"No simple/pna_simple_bs*_wk*.csv found in {script_dir / 'simple'}.\n"
+                f"No simple/pna_simple_bs*_wk2.csv found in {script_dir / 'simple'}.\n"
                 "Run start-pna-simple.sh first."
             )
             sys.exit(0)

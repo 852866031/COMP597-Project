@@ -6,10 +6,10 @@ All batch sizes must be present; the script exits with an error listing
 every missing file rather than silently skipping.
 
 Sources required (8 files total — 2 per batch size):
-  pna_result/utils/pna_utils_bs{N}_wk*_steps.csv
+  pna_result/utils/pna_utils_bs{N}_wk2_steps.csv
       Step-level hardware utilisation samples from PNAUtilsStats.
 
-  pna_result/carbon/pna_carbon_bs{N}_wk*_steps.csv
+  pna_result/carbon/pna_carbon_bs{N}_wk2_steps.csv
       Per-step energy data from PNACarbonStats.  Energy columns are empty for
       steps that did not close a 500 ms measurement window; non-empty rows hold
       accumulated energy for the window.
@@ -49,7 +49,7 @@ KWH_TO_MWH = 1_000.0     # kWh → mWh
 
 
 # ---------------------------------------------------------------------------
-# File path helpers (glob-based — match any _wk* worker count)
+# File path helpers (glob-based — default wk2)
 # ---------------------------------------------------------------------------
 
 def _glob_one(directory: Path, pattern: str) -> Optional[Path]:
@@ -58,11 +58,11 @@ def _glob_one(directory: Path, pattern: str) -> Optional[Path]:
 
 
 def _utils_csv(result_dir: Path, bs: int) -> Optional[Path]:
-    return _glob_one(result_dir / "utils", f"pna_utils_bs{bs}_wk*_steps.csv")
+    return _glob_one(result_dir / "utils", f"pna_utils_bs{bs}_wk2_steps.csv")
 
 
 def _step_csv(result_dir: Path, bs: int) -> Optional[Path]:
-    return _glob_one(result_dir / "carbon", f"pna_carbon_bs{bs}_wk*_steps.csv")
+    return _glob_one(result_dir / "carbon", f"pna_carbon_bs{bs}_wk2_steps.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +73,8 @@ def check_files(result_dir: Path) -> None:
     missing: List[str] = []
     for bs in BATCH_SIZES:
         checks = [
-            (_utils_csv(result_dir, bs), f"utils/pna_utils_bs{bs}_wk*_steps.csv"),
-            (_step_csv(result_dir, bs),  f"carbon/pna_carbon_bs{bs}_wk*_steps.csv"),
+            (_utils_csv(result_dir, bs), f"utils/pna_utils_bs{bs}_wk2_steps.csv"),
+            (_step_csv(result_dir, bs),  f"carbon/pna_carbon_bs{bs}_wk2_steps.csv"),
         ]
         for path, pattern in checks:
             if path is None:

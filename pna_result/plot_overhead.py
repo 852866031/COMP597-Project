@@ -78,11 +78,11 @@ def _discover(directory: Path, subdir: str, pattern: str) -> Optional[Path]:
 
 
 def discover_simple(directory: Path) -> Optional[Path]:
-    return _discover(directory, "simple", "pna_simple_bs4096_wk*.csv")
+    return _discover(directory, "simple", "pna_simple_bs4096_wk2.csv")
 
 
 def discover_gc_manual(directory: Path) -> Optional[Path]:
-    return _discover(directory, "manual", "pna_manual_gc_bs4096_wk*.csv")
+    return _discover(directory, "manual", "pna_manual_gc_bs4096_wk2.csv")
 
 
 def discover_utils(directory: Path) -> Optional[Path]:
@@ -91,14 +91,14 @@ def discover_utils(directory: Path) -> Optional[Path]:
     if not d.is_dir():
         return None
     matches = sorted(
-        p for p in d.glob("pna_utils_bs4096_wk*_steps.csv")
+        p for p in d.glob("pna_utils_bs4096_wk2_steps.csv")
         if "_agg" not in p.name
     )
     return matches[0] if matches else None
 
 
 def discover_carbon(directory: Path) -> Optional[Path]:
-    return _discover(directory, "carbon", "pna_carbon_bs4096_wk*_steps.csv")
+    return _discover(directory, "carbon", "pna_carbon_bs4096_wk2_steps.csv")
 
 
 # ---------------------------------------------------------------------------

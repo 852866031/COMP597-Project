@@ -90,7 +90,7 @@ class ModelConfig(_BaseConfig):
 
         self._arg_num_workers = _Arg(
             type=int,
-            default=0,
+            default=2,
             help="PyG DataLoader workers",
         )
 

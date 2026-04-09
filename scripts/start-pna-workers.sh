@@ -1,8 +1,8 @@
 SCRIPTS_DIR=$(readlink -f -n $(dirname $0))
 REPO_DIR=$(readlink -f -n ${SCRIPTS_DIR}/..)
 
-# Parse -wk <num_workers> (default: 0)
-WK=0
+# Parse -wk <num_workers> (default: 2)
+WK=2
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -wk) WK="$2"; shift 2 ;;

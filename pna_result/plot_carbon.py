@@ -16,7 +16,7 @@ Usage
     python pna_result/plot_carbon.py
 
 # Point at a specific steps CSV:
-    python pna_result/plot_carbon.py --step pna_result/carbon/pna_carbon_bs1024_wk0_steps.csv
+    python pna_result/plot_carbon.py --step pna_result/carbon/pna_carbon_bs4096_wk2_steps.csv
 
 Output
 ------
@@ -442,11 +442,11 @@ def plot_pancake_carbon_hardware(step_df: pd.DataFrame, out_path: Path,
 # ---------------------------------------------------------------------------
 
 def discover_step_csvs(directory: Path) -> List[Path]:
-    """Find pna_carbon_bs*_wk*_steps.csv files in carbon/ subdir."""
+    """Find pna_carbon_bs*_wk2_steps.csv files in carbon/ subdir."""
     carbon_dir = directory / "carbon"
     if not carbon_dir.is_dir():
         return []
-    return sorted(carbon_dir.glob("pna_carbon_bs*_wk*_steps.csv"))
+    return sorted(carbon_dir.glob("pna_carbon_bs*_wk2_steps.csv"))
 
 
 def process_file(step_csv: Path) -> None:
@@ -504,7 +504,7 @@ def main() -> None:
         csv_files = discover_step_csvs(script_dir)
         if not csv_files:
             print(
-                f"No pna_carbon_bs*_wk*_steps.csv found in {script_dir / 'carbon'}.\n"
+                f"No pna_carbon_bs*_wk2_steps.csv found in {script_dir / 'carbon'}.\n"
                 "Run start-pna-carbon.sh first."
             )
             sys.exit(0)
