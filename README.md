@@ -13,7 +13,8 @@ This report presents a profiling study of the **Principal Neighbourhood Aggregat
 5. [Manual GC Baseline](#5-manual-gc-baseline)
 6. [Hardware Utilization](#6-hardware-utilization)
 7. [Energy and Carbon](#7-energy-and-carbon)
-8. [Summary](#8-summary)
+8. [Varying DataLoader Workers](#8-varying-dataloader-workers)
+9. [Summary](#9-summary)
 
 ---
 
@@ -208,7 +209,31 @@ The carbon emissions breakdown mirrors the energy breakdown exactly (Quebec's gr
 
 ---
 
-## 8. Summary
+## 8. Varying DataLoader Workers
+
+All previous results use 2 DataLoader workers. To isolate the effect of data-loading parallelism, we sweep workers at **0, 2, and 4** with batch size fixed at 4096.
+
+### GPU and CPU Utilization
+
+| | |
+|:---:|:---:|
+| ![GPU util vs workers](pna_result/plots/wk_gpu_util.png) | ![CPU util vs workers](pna_result/plots/wk_cpu_util.png) |
+| *GPU utilization vs DataLoader workers* | *CPU utilization vs DataLoader workers* |
+
+With **0 workers** (single-threaded data loading), GPU utilization drops significantly because the main thread must alternate between CPU-bound graph collation and GPU kernel dispatch — the GPU idles while waiting for each batch to be prepared. Adding **2 workers** provides a large jump in GPU utilization by pipelining data preparation with GPU compute. Going to **4 workers** provides diminishing returns, as the data loading is no longer the bottleneck at this batch size.
+
+### Energy
+
+| | |
+|:---:|:---:|
+| ![Energy vs workers](pna_result/plots/wk_energy_total.png) | ![Energy hardware vs workers](pna_result/plots/wk_energy_hardware.png) |
+| *Avg energy per epoch vs workers* | *Per-step energy by hardware vs workers* |
+
+More workers reduce wall-clock time per epoch, which directly reduces CPU energy (charged at constant TDP rate). The energy savings from 0 → 2 workers are substantial; from 2 → 4 workers the improvement flattens, consistent with the GPU utilization plateau.
+
+---
+
+## 9. Summary
 
 1. **Raw measurement reveals two distinct anomalies**: GC spikes at smaller batch sizes and batch-shape dips at bs4096. Spike analysis confirms the first is caused by Python gen-2 garbage collection; the second is simply partial batches at epoch boundaries.
 
