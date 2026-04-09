@@ -51,7 +51,7 @@ We use a **10 000-graph subset** of the training split. This is large enough to 
 
 | Configuration | Batch Sizes | Workers | Purpose |
 |:---|:---|:---:|:---|
-| **Primary** | **4096** | 2 | Main focus — largest batch that fits in GPU memory. Default batch size in MilaBench |
+| **Primary** | **4096** | 2 | Main focus — largest batch that fits in GPU memory. Default batch size in MilaBench. |
 | **Secondary** | **512** | 2 | Contrast point — smaller batches expose GC spike patterns and different forward/backward cost balance. |
 | **Trend** | 1024, 2048 | 2 | Fill in the scaling curve between 512 and 4096 for utilisation, latency, and energy. |
 | **Worker sweep** | 4096 | 0, 2, 4 | Isolates the effect of DataLoader parallelism on GPU utilisation and throughput at fixed batch size. |
