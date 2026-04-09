@@ -66,13 +66,12 @@ The intermediate sizes (1024, 2048) are included to show the **trend** when vary
 
 We build up instrumentation in layers, starting from a raw observation of the workload and progressively adding controlled measurements:
 
-| # | Measurement | Module | What It Records | GC Control |
+| # | Measurement | What It Records | GC Control |
 |:-:|:---|:---|:---|:---|
-| 1 | **Raw measurement** | `pna_simple` | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). | GC on (default) |
-| 2 | **GC spike attribution** | `pna_spike` | Two back-to-back runs: GC **on** with gen-2 event logging, then GC **off**. Isolates GC as the source of latency spikes. | On, then off |
-| 3 | **GC-controlled e2e** | `pna_manual_gc` | Same timing as raw, but with a **clean baseline**: automatic GC disabled during training, full gen-2 sweep forced between epochs. Foundation for all subsequent measurements. | Manual (between epochs) |
-| 4 | **Hardware utilisation** | `pna_utils` | Built on (3). Adds GPU util (`pynvml`), per-process CPU util (`psutil`), and RAM usage, sampled at 500 ms intervals. | Manual (between epochs) |
-| 5 | **Energy and carbon** | `pna_carbon` | Built on (3). Adds per-step energy (CPU/GPU/RAM kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. | Manual (between epochs) |
+| 1 | **Raw measurement**  | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). | GC on (default) |
+| 2 | **GC-controlled e2e Baseline** | | Same timing as raw, but represents a **clean baseline**: automatic GC disabled during training, full gen-2 sweep forced between epochs. Foundation for all subsequent measurements. | Manual (between epochs) |
+| 4 | **Hardware utilisation**  | Built on (2). Adds GPU util (`pynvml`), per-process CPU util (`psutil`), and RAM usage, sampled at 500 ms intervals. | Manual (between epochs) |
+| 5 | **Energy and carbon** | Built on (2). Adds per-step energy (CPU/GPU/RAM kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. | Manual (between epochs) |
 
 Each layer motivates the next: the raw measurement reveals GC spikes → the spike experiment confirms GC as the cause → manual GC creates a clean baseline → utilisation and energy measurements build on that baseline without GC noise.
 
