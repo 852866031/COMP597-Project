@@ -36,6 +36,7 @@ if [[ ${EPOCHS} -gt 30 ]]; then EPOCHS=30; fi
 # trap 'rm -f "${_UTILS_CPU_CFG}"' EXIT
 
 ### run PNA Trainer with hardware utilisation stats (pna_utils)
+EPOCHS=90
 ${SCRIPTS_DIR}/srun.sh \
     --logging.level INFO \
     --model pna \
