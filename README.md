@@ -68,7 +68,7 @@ We build up instrumentation in layers, starting from a raw observation of the wo
 
 | # | Measurement | Purpose | What It Records |
 |:-:|:---|:---|:---|
-| 1 | **Raw measurement** | Capture the workload as-is with default GC, revealing latency spikes and batch-shape effects. | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). |
+| 1 | **Raw measurement** | Capture the workload as-is with default GC, revealing latency spikes and batch-shape effects. | CUDA-synced step timing. |
 | 2 | **GC-controlled e2e baseline** | Establish a clean baseline free of GC noise. Automatic GC disabled during training; full gen-2 sweep forced between epochs. Foundation for measurements 3 and 4. | Same step & substep timing as raw, but without GC-induced variability. |
 | 3 | **Hardware utilisation** | Quantify GPU, CPU, and memory usage across batch sizes. Built on (2). | GPU util (`pynvml`), per-process CPU util (`psutil`), RAM usage. Sampled at 500 ms intervals. |
 | 4 | **Energy and carbon** | Measure per-step energy consumption and CO₂ emissions. Built on (2). | CPU/GPU/RAM energy breakdown (kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. |
