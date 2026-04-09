@@ -94,9 +94,9 @@ def _draw_epoch_vlines(ax, epoch_step_ids: List[int]) -> None:
 # ---------------------------------------------------------------------------
 
 BATCH_SHAPE_COLS = ["batch_num_graphs", "batch_num_nodes", "batch_num_edges"]
-BATCH_SHAPE_COLORS = {"batch_num_graphs": "#E63946",
+BATCH_SHAPE_COLORS = {"batch_num_graphs": "#FB8500",
                       "batch_num_nodes":  "#8338EC",
-                      "batch_num_edges":  "#FB8500"}
+                      "batch_num_edges":  "#E63946"}
 BATCH_SHAPE_LABELS = {"batch_num_graphs": "# graphs",
                       "batch_num_nodes":  "# nodes",
                       "batch_num_edges":  "# edges"}

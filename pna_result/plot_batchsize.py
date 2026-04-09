@@ -325,6 +325,80 @@ def plot_energy_hardware(step_data: Dict[int, pd.DataFrame], out_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
+# Plot 5 — avg step latency + avg epoch latency (two subplots)
+# ---------------------------------------------------------------------------
+
+def plot_latency(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    """Side-by-side bar charts: mean step latency (ms) and mean epoch latency (s)."""
+    step_avgs:  List[float] = []
+    epoch_avgs: List[float] = []
+
+    for bs in BATCH_SIZES:
+        df = utils_data[bs]
+        step_ms = pd.to_numeric(df.get("step_ms", pd.Series(dtype=float)),
+                                errors="coerce").dropna()
+        step_avgs.append(float(step_ms.mean()) if not step_ms.empty else float("nan"))
+
+        if "epoch" in df.columns:
+            epoch_totals = df.groupby("epoch")["step_ms"].sum()
+            epoch_avgs.append(float(epoch_totals.mean()) / 1000.0 if not epoch_totals.empty
+                              else float("nan"))
+        else:
+            epoch_avgs.append(float("nan"))
+
+    fig, (ax_step, ax_epoch) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle(
+        "PNA — Latency vs Batch Size",
+        fontsize=14, fontweight="bold",
+    )
+
+    # Left: avg step latency (ms)
+    x = np.arange(len(BATCH_SIZES))
+    bars_s = ax_step.bar(x, step_avgs, width=0.5, color=BS_COLORS,
+                         alpha=0.85, zorder=3)
+    valid_s = [v for v in step_avgs if not np.isnan(v)]
+    y_max_s = max(valid_s) if valid_s else 1.0
+    for bar, val in zip(bars_s, step_avgs):
+        if np.isnan(val):
+            continue
+        ax_step.text(bar.get_x() + bar.get_width() / 2,
+                     bar.get_height() + y_max_s * 0.01,
+                     f"{val:.0f} ms",
+                     ha="center", va="bottom", fontsize=9, fontweight="bold")
+    ax_step.set_xticks(x)
+    ax_step.set_xticklabels(BS_LABELS, fontsize=10)
+    ax_step.set_xlabel("Batch Size")
+    ax_step.set_ylabel("Mean Step Latency (ms)")
+    ax_step.set_title("Per Step", fontsize=11)
+    ax_step.set_ylim(0, y_max_s * 1.18)
+    ax_step.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_step.set_axisbelow(True)
+
+    # Right: avg epoch latency (s)
+    bars_e = ax_epoch.bar(x, epoch_avgs, width=0.5, color=BS_COLORS,
+                          alpha=0.85, zorder=3)
+    valid_e = [v for v in epoch_avgs if not np.isnan(v)]
+    y_max_e = max(valid_e) if valid_e else 1.0
+    for bar, val in zip(bars_e, epoch_avgs):
+        if np.isnan(val):
+            continue
+        ax_epoch.text(bar.get_x() + bar.get_width() / 2,
+                      bar.get_height() + y_max_e * 0.01,
+                      f"{val:.1f}s",
+                      ha="center", va="bottom", fontsize=9, fontweight="bold")
+    ax_epoch.set_xticks(x)
+    ax_epoch.set_xticklabels(BS_LABELS, fontsize=10)
+    ax_epoch.set_xlabel("Batch Size")
+    ax_epoch.set_ylabel("Mean Epoch Latency (s)")
+    ax_epoch.set_title("Per Epoch", fontsize=11)
+    ax_epoch.set_ylim(0, y_max_e * 1.18)
+    ax_epoch.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_epoch.set_axisbelow(True)
+
+    _save(fig, out_path, "bs_latency")
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -346,6 +420,7 @@ def main() -> None:
     print("Generating plots:")
     plot_gpu_util_avg(utils_data,  out_dir / "bs_gpu_util.png")
     plot_cpu_util_avg(utils_data,  out_dir / "bs_cpu_util.png")
+    plot_latency(utils_data,       out_dir / "bs_latency.png")
     plot_energy_total(step_data,   out_dir / "bs_energy_total.png")
     plot_energy_hardware(step_data, out_dir / "bs_energy_hardware.png")
 
