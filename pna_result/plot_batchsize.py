@@ -325,6 +325,58 @@ def plot_energy_hardware(step_data: Dict[int, pd.DataFrame], out_path: Path) -> 
 
 
 # ---------------------------------------------------------------------------
+# Plot 4b — per-epoch energy breakdown by hardware component
+# ---------------------------------------------------------------------------
+
+def plot_energy_hardware_epoch(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    """Clustered bar chart: x = hardware (cpu/gpu/ram), clusters = batch sizes.
+    Values are mean per-epoch energy (sum within epoch, averaged across epochs)."""
+    avgs: Dict[str, List[float]] = {hw: [] for hw in _HW_COMPONENTS}
+    for bs in BATCH_SIZES:
+        df = step_data[bs]
+        for hw in _HW_COMPONENTS:
+            col = f"{hw}_energy"
+            if col not in df.columns or "epoch" not in df.columns:
+                avgs[hw].append(float("nan"))
+                continue
+            measured = df[df[col].notna()]
+            if measured.empty:
+                avgs[hw].append(float("nan"))
+                continue
+            epoch_totals = measured.groupby("epoch")[col].sum()
+            avgs[hw].append(float(epoch_totals.mean()) * KWH_TO_MWH)
+
+    n_hw = len(_HW_COMPONENTS)
+    n_bs = len(BATCH_SIZES)
+    x_base  = np.arange(n_hw)
+    offsets = (np.arange(n_bs) - (n_bs - 1) / 2.0) * (0.8 / n_bs)
+    width   = 0.8 / n_bs
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    fig.suptitle(
+        "PNA — Avg Energy per Epoch by Hardware vs Batch Size\n"
+        "mean over all epochs · CodeCarbon (mWh)",
+        fontsize=13, fontweight="bold",
+    )
+
+    for i, (bs, color, label) in enumerate(zip(BATCH_SIZES, BS_COLORS, BS_LABELS)):
+        xs   = x_base + offsets[i]
+        vals = [avgs[hw][i] for hw in _HW_COMPONENTS]
+        ax.bar(xs, vals, width=width, color=color, alpha=0.85,
+               label=label, zorder=3, edgecolor="white", linewidth=0.5)
+
+    ax.set_xticks(x_base)
+    ax.set_xticklabels([_HW_LABELS[hw] for hw in _HW_COMPONENTS], fontsize=11)
+    ax.set_xlabel("Hardware Component")
+    ax.set_ylabel("Energy per epoch (mWh)")
+    ax.legend(fontsize=9, loc="upper right")
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax.set_axisbelow(True)
+
+    _save(fig, out_path, "bs_energy_hardware_epoch")
+
+
+# ---------------------------------------------------------------------------
 # Plot 5 — avg step latency + avg epoch latency (two subplots)
 # ---------------------------------------------------------------------------
 
@@ -423,6 +475,7 @@ def main() -> None:
     plot_latency(utils_data,       out_dir / "bs_latency.png")
     plot_energy_total(step_data,   out_dir / "bs_energy_total.png")
     plot_energy_hardware(step_data, out_dir / "bs_energy_hardware.png")
+    plot_energy_hardware_epoch(step_data, out_dir / "bs_energy_hardware_epoch.png")
 
     print("\nDone.")
 

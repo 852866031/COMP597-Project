@@ -6,46 +6,29 @@ This report presents a profiling study of the **Principal Neighbourhood Aggregat
 
 ## Table of Contents
 
-1. [The PNA Workload](#1-the-pna-workload)
+1. [Workload Overview](#1-workload-overview)
 2. [Experiment Setup](#2-experiment-setup)
-3. [Training at Batch Size 4096](#3-training-at-batch-size-4096)
-4. [Training at Batch Size 512 — GC Spike Attribution](#4-training-at-batch-size-512--gc-spike-attribution)
-5. [Batch-Size Comparison](#5-batch-size-comparison)
-6. [Energy and Carbon](#6-energy-and-carbon)
-7. [Measurement Overhead](#7-measurement-overhead)
+3. [Raw Measurement](#3-raw-measurement)
+4. [Spike Analysis](#4-spike-analysis)
+5. [Manual GC Baseline](#5-manual-gc-baseline)
+6. [Hardware Utilization](#6-hardware-utilization)
+7. [Energy and Carbon](#7-energy-and-carbon)
 8. [Summary](#8-summary)
 
 ---
 
-## 1. The PNA Workload
+## 1. Workload Overview
 
-### What Is PNA?
+**PNA (Principal Neighbourhood Aggregation)** is a graph neural network architecture designed for graph-level prediction tasks such as molecular property prediction. It is trained on molecular graphs from the **PCQM4Mv2 dataset** (10 000-graph subset), where nodes represent atoms, edges represent chemical bonds, and the target is a real-valued molecular property.
 
-**Principal Neighbourhood Aggregation (PNA)** is a GNN architecture that applies *multiple* aggregation functions (mean, min, max, std) simultaneously at each layer and scales their outputs by node degree. This multi-aggregator design makes it more expressive than standard message-passing networks.
-
-The model is trained on a molecular dataset where each graph represents a molecule (nodes = atoms, edges = bonds). The regression target is a quantum-chemical property. The model uses **64 PNA convolution layers**, **4 aggregators**, and **3 scalers**, totalling ~4 million parameters.
-
-### Training Pipeline
-
-Each training step follows three phases:
-
-```
- FORWARD       64 layers of neighbourhood aggregation + global pooling + L1 loss
- BACKWARD      autograd through 64 conv layers over irregular sparse graphs
- OPTIMIZER     Adam weight update + cosine-annealing LR schedule
-```
-
-Data loading is handled by PyTorch Geometric's `DataLoader`, which collates variable-size molecular graphs into a single batched graph. This involves stacking node feature tensors, concatenating and offset-shifting edge index tensors, and building batch assignment vectors — all Python-heavy operations that create significant GC pressure.
+The model consists of:
+- **64 stacked PNA Conv layers**, which iteratively update node embeddings by aggregating neighbour information using four aggregators (mean, max, min, std) and three scalers (identity, amplification, attenuation)
+- **A global max pooling layer**, which converts variable-sized node embeddings into a fixed-size graph embedding
+- **A linear layer**, which maps the graph embedding to a single real-valued prediction
 
 ---
 
 ## 2. Experiment Setup
-
-### Dataset
-
-All experiments use **PCQM4Mv2**, a large-scale quantum chemistry dataset from the Open Graph Benchmark. Each sample is a molecular graph: nodes represent atoms (with features encoding atomic number, chirality, formal charge, etc.) and edges represent chemical bonds. The regression target is the HOMO-LUMO gap, a quantum property governing a molecule's optical and electronic behaviour.
-
-We use a **10 000-graph subset** of the training split. This is large enough to exhibit realistic batch-composition effects (partial batches, variable graph sizes) while keeping individual experiment runtimes manageable for sweeping across multiple configurations.
 
 ### Training Configurations
 
@@ -55,12 +38,6 @@ We use a **10 000-graph subset** of the training split. This is large enough to 
 | **Secondary** | **512** | 2 | Contrast point — smaller batches expose GC spike patterns and different forward/backward cost balance. |
 | **Trend** | 1024, 2048 | 2 | Fill in the scaling curve between 512 and 4096 for utilization, latency, and energy. |
 | **Worker sweep** | 4096 | 0, 2, 4 | Isolates the effect of DataLoader parallelism on GPU utilization and throughput at fixed batch size. |
-
-All runs use **2 DataLoader workers** by default, which overlap CPU-side graph collation with GPU computation. The worker sweep at bs4096 additionally tests 0 and 4 workers to quantify the impact of this pipelining.
-
-**Batch size 4096** is the largest configuration that fits in GPU memory on our hardware. Attempts at 8192 result in out-of-memory errors. This makes 4096 the natural operating point for maximum GPU occupancy and the focus of our analysis. **Batch size 512** serves as a contrast — its short steps and frequent GC triggers produce qualitatively different behaviour, particularly around garbage-collection spikes.
-
-The intermediate sizes (1024, 2048) are included to show the **trend** when varying batch size: how GPU utilization, epoch latency, and energy scale between the two extremes. They are not analysed in as much detail individually.
 
 ### Measurement Types
 
@@ -73,267 +50,174 @@ We build up instrumentation in layers, starting from a raw observation of the wo
 | 3 | **Hardware utilization** | Quantify GPU, CPU, and memory usage across batch sizes. Built on (2). | GPU util (`pynvml`), per-process CPU util (`psutil`), RAM usage. Sampled at 500 ms intervals. |
 | 4 | **Energy and carbon** | Measure per-step energy consumption and CO₂ emissions. Built on (2). | CPU/GPU/RAM energy breakdown (kWh) and CO₂ emissions via CodeCarbon `OfflineEmissionsTracker` with 500 ms measurement windows. |
 
-Each layer motivates the next: the raw measurement reveals GC spikes → the spike experiment confirms GC as the cause → manual GC creates a clean baseline → utilization and energy measurements build on that baseline without GC noise.
-
-All measurement types add less than 0.3% overhead to step latency (see [Section 7](#7-measurement-overhead)), so the numbers they report are representative of the uninstrumented workload.
+Each layer motivates the next: the raw measurement reveals anomalies → spike analysis diagnoses the cause → manual GC creates a clean baseline → utilization and energy measurements build on that baseline.
 
 ---
 
-## 3. Training at Batch Size 4096
+## 3. Raw Measurement
 
-At batch size 4096, the training dataset yields **3 steps per epoch**: two full batches of 4096 graphs and one partial batch of 1808 graphs (the remainder). This creates a distinctive repeating pattern.
-
-### The Step-Time Pattern Is Driven by Batch Shape
-
-The total-time plot shows a striking alternation between ~775 ms steps and ~285 ms steps:
-
-![Total Step Execution Time (bs4096)](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_total_time.png)
-
-Overlaying the batch-shape metadata immediately reveals the cause — the short steps are simply the **partial final batch** of each epoch:
-
-![Total Step Execution Time + Batch Shape](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_total_time_batch_shape.png)
-
-Every third step has roughly half the nodes (~25 000 vs ~57 000) and half the edges (~52 000 vs ~118 000). Since GNN computation scales with the number of nodes and edges, step time scales proportionally. There is no "spike" — the training loop is behaving exactly as expected given the dataset size.
-
-### Time Breakdown
+The first pass captures per-step execution time across all four batch sizes with default Python GC settings:
 
 | | |
 |:---:|:---:|
-| ![Breakdown (bs4096)](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_breakdown.png) | ![Loss (bs4096)](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_loss.png) |
-| *Execution time breakdown per step* | *Training loss per step* |
+| ![bs512](pna_result/simple/plots/bs512/pna_simple_bs512_wk2_total_time.png) | ![bs1024](pna_result/simple/plots/bs1024/pna_simple_bs1024_wk2_total_time.png) |
+| **Batch size 512** — baseline ~105 ms | **Batch size 1024** — baseline ~148 ms |
+
+| | |
+|:---:|:---:|
+| ![bs2048](pna_result/simple/plots/bs2048/pna_simple_bs2048_wk2_total_time.png) | ![bs4096](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_total_time.png) |
+| **Batch size 2048** — baseline ~322 ms | **Batch size 4096** — baseline ~775 ms |
+
+Two patterns stand out immediately:
+
+**Spikes at smaller batch sizes** (512, 1024, 2048): Occasional sharp latency spikes that far exceed the baseline — e.g. ~330 ms at bs512 where the baseline is ~105 ms. These appear at seemingly random intervals and affect all substeps simultaneously, suggesting an external cause rather than a model-driven one.
+
+**Periodic dips at batch size 4096**: A repeating pattern of tall bars (~775 ms) alternating with short bars (~285 ms). Unlike the spikes at smaller sizes, this pattern is perfectly regular — every third step is short. This suggests a structural cause tied to the data pipeline.
+
+---
+
+## 4. Spike Analysis
+
+### Case 1: GC Spikes at Batch Size 512
+
+To investigate the spikes, we run a diagnostic experiment: same workload with GC event logging enabled, followed by a run with GC disabled.
+
+**GC on** — the breakdown shows the spike landing in the optimizer/other region:
+
+![GC on (bs512)](pna_result/spike/plots/pna_spike_bs512_wk2_breakdown_gc_on.png)
+
+**GC on + annotated** — overlaying gen-2 GC events confirms the spike aligns precisely with a gen-2 collection:
+
+![GC on annotated (bs512)](pna_result/spike/plots/pna_spike_bs512_wk2_breakdown_gc_on_annotated.png)
+
+**GC off** — disabling automatic GC produces a perfectly flat trace, confirming GC as the sole cause:
+
+![GC off (bs512)](pna_result/spike/plots/pna_spike_bs512_wk2_breakdown_gc_off.png)
+
+The gen-2 collections are triggered by PyTorch Geometric's `DataLoader`, which creates many short-lived Python objects (graph tensors, batch index tensors) every step. These accumulate through Python's generational GC until a gen-2 sweep fires, pausing the process for **130–180 ms**.
+
+### Case 2: Batch-Shape Dips at Batch Size 4096
+
+The periodic pattern at bs4096 has a completely different cause. The time breakdown shows all three substeps (forward, backward, optimizer) scale down together at the short steps:
+
+![Breakdown (bs4096)](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_breakdown.png)
+
+Overlaying batch-shape metadata reveals why — the short steps are simply **partial batches** at epoch boundaries:
+
+![Batch shape overlay (bs4096)](pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_total_time_batch_shape.png)
+
+The training dataset has 10 000 graphs. At batch size 4096, each epoch yields 2 full batches (4096 graphs, ~57 000 nodes, ~118 000 edges) and 1 partial batch (1808 graphs, ~25 000 nodes, ~52 000 edges). Since GNN computation scales with the number of nodes and edges, the partial batch takes proportionally less time. This is expected behavior, not a performance anomaly.
+
+---
+
+## 5. Manual GC Baseline
+
+With GC identified as the spike source, we establish a **clean baseline** by disabling automatic GC during training and forcing a full gen-2 sweep between epochs. This keeps GC pauses outside any measurement window.
+
+| ![Manual GC bs512](pna_result/manual/plots/pna_manual_gc_bs512_wk2.png) |
+|:---:|
+| **Batch size 512** — breakdown (left) + p90 overhead comparison to raw (right) |
+
+| ![Manual GC bs4096](pna_result/manual/plots/pna_manual_gc_bs4096_wk2.png) |
+|:---:|
+| **Batch size 4096** — breakdown (left) + p90 overhead comparison to raw (right) |
+
+### Latency: Step vs Epoch
+
+![Latency comparison](pna_result/plots/bs_latency.png)
+
+Per-step latency grows linearly with batch size (105 → 615 ms), but per-epoch latency follows a different curve: **bs1024 is fastest** (1.5 s) because it balances step count against per-step compute. Bs512 is slowest (2.1 s) due to having the most steps per epoch.
+
+### Time Breakdown Across Batch Sizes
 
 <table>
 <tr>
-<td width="340"><img src="pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_pancake.png" width="330"></td>
-<td valign="top">
-
-The backward pass dominates at **61.2%** of mean step time (375.5 ms), while the forward pass takes **37.2%** (228.2 ms). The optimizer step is negligible at **1.0%** (3.9 ms).
-
-This split is characteristic of deep GNNs: backpropagating gradients through 64 convolution layers over irregular sparse graphs is significantly more expensive than the forward pass. At large batch sizes the backward pass must manage large intermediate tensors across ~57 000 nodes, making gradient accumulation the dominant cost.
-
-</td>
+<td width="280"><img src="pna_result/manual/plots/pna_manual_gc_bs512_wk2_pancake.png" width="270"></td>
+<td width="280"><img src="pna_result/simple/plots/bs1024/pna_simple_bs1024_wk2_pancake.png" width="270"></td>
+<td width="280"><img src="pna_result/simple/plots/bs4096/pna_simple_bs4096_wk2_pancake.png" width="270"></td>
 </tr>
-</table>
-
-### Hardware utilization at Batch Size 4096
-
-| | |
-|:---:|:---:|
-| ![GPU util (bs4096)](pna_result/utils/plots/pna_utils_bs4096_wk2_steps_util_gpu.png) | ![CPU util (bs4096)](pna_result/utils/plots/pna_utils_bs4096_wk2_steps_util_cpu.png) |
-| *GPU utilization — avg 92.3%* | *Per-process CPU utilization — avg 81.9%* |
-
-![RAM util (bs4096)](pna_result/utils/plots/pna_utils_bs4096_wk2_steps_util_ram.png)
-
-GPU utilization averages **92.3%** at this batch size — remarkably high for a GNN workload. With 2 DataLoader workers pre-fetching batches, the GPU rarely stalls waiting for data. Each full batch contains ~57 000 nodes and ~118 000 edges, producing CUDA kernels large enough to keep the streaming multiprocessors continuously saturated.
-
----
-
-## 4. Training at Batch Size 512 — GC Spike Attribution
-
-At batch size 512, each epoch has 20 steps and execution time is far more uniform — except for **periodic spikes** that significantly exceed the ~105 ms baseline:
-
-| | |
-|:---:|:---:|
-| ![Total Time (bs512)](pna_result/simple/plots/bs512/pna_simple_bs512_wk2_total_time.png) | ![Breakdown (bs512)](pna_result/simple/plots/bs512/pna_simple_bs512_wk2_breakdown.png) |
-| *Step execution time — note the spike* | *Time breakdown — spike appears across all substeps* |
-
-Unlike the batch-shape-driven variation at bs4096, these spikes are caused by **Python's garbage collector**.
-
-### Identifying GC as the Cause
-
-We ran the same workload with GC event logging enabled. Annotating generation-2 collection events onto the time-breakdown reveals the correlation — **spikes align with gen-2 GC sweeps**:
-
-![GC On — Annotated (bs512)](pna_result/spike/plots/pna_spike_bs512_wk2_breakdown_gc_on_annotated.png)
-
-Gen-2 collections pause the process for **130–180 ms**. These pauses are triggered by PyTorch Geometric's `DataLoader`, which creates many short-lived Python objects (graph tensors, batch index tensors) every step. These objects get promoted through Python's generational GC until they trigger a gen-2 sweep.
-
-### Disabling GC Eliminates the Spikes
-
-Running with automatic GC disabled produces a **perfectly flat** execution trace:
-
-![GC Off (bs512)](pna_result/spike/plots/pna_spike_bs512_wk2_breakdown_gc_off.png)
-
-Step time holds steady at ~105 ms with no variation, confirming that GC is the **sole source** of the spikes at this batch size.
-
-<table>
 <tr>
-<td width="340"><img src="pna_result/simple/plots/bs512/pna_simple_bs512_wk2_pancake.png" width="330"></td>
-<td valign="top">
-
-At bs512, the time split differs from bs4096: the forward pass takes **55.3%** (58.3 ms) and the backward pass **38.5%** (40.6 ms). This inversion occurs because small batches produce small graphs where the forward aggregation overhead (64 layers of scatter/gather over many small neighbourhoods) dominates relative to the backward pass, which has less intermediate state to accumulate gradients over.
-
-As batch size grows, backward scales super-linearly due to larger intermediate tensors and more complex autograd graph traversal, eventually overtaking the forward pass.
-
-</td>
+<td align="center"><b>bs512</b> — forward 55%, backward 39%</td>
+<td align="center"><b>bs1024</b> — forward 39%, backward 56%</td>
+<td align="center"><b>bs4096</b> — forward 37%, backward 61%</td>
 </tr>
 </table>
 
-### The Same GC Pattern Appears at Batch Size 4096
-
-GC events also affect bs4096 training when GC is enabled. The spike experiment at bs4096 confirms this and shows that disabling GC produces an equally flat trace:
-
-| | |
-|:---:|:---:|
-| ![GC On (bs4096)](pna_result/spike/plots/pna_spike_bs4096_wk2_breakdown_gc_on.png) | ![GC Off (bs4096)](pna_result/spike/plots/pna_spike_bs4096_wk2_breakdown_gc_off.png) |
-| *GC on: variability from gen-2 collections* | *GC off: flat ~775 ms trace* |
+The dominant substep **shifts from forward to backward** as batch size grows. At small batch sizes, the forward pass is bottlenecked by fixed per-layer overhead (kernel launch latency, index setup across 64 layers) that doesn't scale with graph count. At large batch sizes this overhead becomes negligible; the backward pass dominates because it has a higher per-element constant factor — storing intermediate activations at every layer and accumulating gradients across all nodes.
 
 ---
 
-## 5. Batch-Size Comparison
+## 6. Hardware Utilization
 
-### Epoch Latency
-
-Despite much longer per-step times, larger batch sizes complete each epoch **faster** because they process the same dataset in fewer steps:
-
-![Epoch Latency vs Batch Size](pna_result/plots/bs_epoch_latency.png)
-
-| Batch Size | Mean Step Time | Steps/Epoch | Epoch Latency |
-|:----------:|:--------------:|:-----------:|:-------------:|
-| 512        | 105 ms         | 20          | **2.1 s**     |
-| 1024       | 148 ms         | 10          | **1.5 s**     |
-| 2048       | 322 ms         | 5           | **1.6 s**     |
-| 4096       | 614 ms         | 3           | **1.8 s**     |
-
-Batch size 1024 achieves the lowest epoch latency (1.5 s). Beyond that, per-step compute grows faster than the step-count reduction, so epoch latency rises slightly — but all larger sizes remain well below bs512.
-
-### GPU utilization Scales with Batch Size
-
-With 2 DataLoader workers, GPU utilization **increases monotonically** with batch size — a clean scaling relationship:
+### Batch Size 4096: Per-Step Detail
 
 | | |
 |:---:|:---:|
-| ![GPU Util vs BS](pna_result/plots/bs_gpu_util.png) | ![CPU Util vs BS](pna_result/plots/bs_cpu_util.png) |
-| *GPU utilization scales smoothly from 45% to 92%* | *CPU utilization remains high across all sizes (81–91%)* |
+| ![GPU util bs4096](pna_result/utils/plots/pna_utils_bs4096_wk2_steps_util_gpu.png) | ![CPU util bs4096](pna_result/utils/plots/pna_utils_bs4096_wk2_steps_util_cpu.png) |
+| *GPU utilization — avg 92.3%* | *CPU utilization (per-process)* |
 
-| Batch Size | GPU Util | CPU Util |
-|:----------:|:--------:|:--------:|
-| 512        | 44.6%    | 90.8%    |
-| 1024       | 55.9%    | 84.0%    |
-| 2048       | 63.2%    | 81.4%    |
-| 4096       | 92.3%    | 81.9%    |
+![RAM bs4096](pna_result/utils/plots/pna_utils_bs4096_wk2_steps_util_ram.png)
 
-**Why GPU utilization increases**: larger batches produce larger batched graphs with more nodes and edges. This creates larger CUDA kernels with higher arithmetic intensity per launch, improving occupancy on the GPU's streaming multiprocessors. At bs4096 (~57 000 nodes, ~118 000 edges per batch), the kernels are large enough to keep the GPU near-continuously busy.
+GPU utilization averages **92.3%** at bs4096 — remarkably high for a GNN workload. The periodic dips in GPU util correspond to the partial batches at epoch boundaries, where the GPU finishes the smaller batch quickly and briefly idles. RAM usage is stable at ~21 GB throughout.
 
-**The role of DataLoader workers**: with `num_workers=2`, data preparation is pipelined with GPU computation. This eliminates the idle gaps that plagued the single-threaded (`num_workers=0`) configuration. The clean monotonic scaling is a direct result of this pipelining — without it, GPU utilization showed a non-monotonic dip at intermediate batch sizes where the GPU waited for the CPU to finish collating each batch.
-
-**CPU utilization**: remains high across all batch sizes (81–91%). The main process is consistently loaded by CUDA kernel dispatch, while the 2 worker processes handle data collation in parallel.
-
-### Batch Sizes 1024 and 2048
+### Utilization Across Batch Sizes and Workers
 
 | | |
 |:---:|:---:|
-| ![Total Time (bs1024)](pna_result/simple/plots/bs1024/pna_simple_bs1024_wk2_total_time.png) | ![Breakdown (bs1024)](pna_result/simple/plots/bs1024/pna_simple_bs1024_wk2_breakdown.png) |
-| *bs1024: ~148 ms steps* | *bs1024: forward/backward transition zone* |
+| ![GPU util vs BS](pna_result/plots/bs_gpu_util.png) | ![CPU util vs BS](pna_result/plots/bs_cpu_util.png) |
+| *GPU utilization scales monotonically: 45% → 56% → 63% → 92%* | *CPU utilization stays high (81–91%) across all sizes* |
 
-| | |
-|:---:|:---:|
-| ![Total Time (bs2048)](pna_result/simple/plots/bs2048/pna_simple_bs2048_wk2_total_time.png) | ![Breakdown (bs2048)](pna_result/simple/plots/bs2048/pna_simple_bs2048_wk2_breakdown.png) |
-| *bs2048: ~322 ms steps, partial-batch dips visible* | *bs2048: backward pass starts dominating* |
-
-These intermediate sizes show a transition: at bs1024 the forward and backward passes are roughly balanced, while at bs2048 the backward pass starts to dominate — reaching the 61/37 split seen at bs4096.
+GPU utilization **increases monotonically** with batch size because larger batches produce larger CUDA kernels with higher arithmetic intensity per launch. With 2 DataLoader workers pipelining data preparation with GPU compute, the GPU rarely stalls waiting for data.
 
 ---
 
-## 6. Energy and Carbon
+## 7. Energy and Carbon
 
-### Energy per Epoch
-
-Energy per epoch varies with batch size, with **bs1024 being the most energy-efficient** configuration:
-
-![Energy per Epoch vs Batch Size](pna_result/plots/bs_energy_total.png)
-
-| Batch Size | Energy/Epoch |
-|:----------:|:------------:|
-| 512        | 0.314 mWh    |
-| 1024       | 0.264 mWh    |
-| 2048       | 0.280 mWh    |
-| 4096       | 0.310 mWh    |
-
-The sweet spot is at bs1024: it has the fastest epoch latency (1.5 s) and the lowest energy consumption. At bs4096, although GPU utilization is highest (92.3%), the longer per-step computation outweighs the step-count reduction, pushing total energy back up. The result is a U-shaped energy curve — an important finding for practitioners choosing batch sizes for energy-efficient training.
-
-### Energy Breakdown by Hardware
+### Batch Size 4096: Per-Step Detail
 
 | | |
 |:---:|:---:|
-| ![Energy Hardware (bs4096)](pna_result/carbon/plots/pna_carbon_bs4096_wk2_energy_hardware.png) | ![Energy Hardware (bs512)](pna_result/carbon/plots/pna_carbon_bs512_wk2_energy_hardware.png) |
-| *bs4096: per-step energy by hardware* | *bs512: per-step energy by hardware* |
+| ![Energy hardware bs4096](pna_result/carbon/plots/pna_carbon_bs4096_wk2_energy_hardware.png) | ![Carbon hardware bs4096](pna_result/carbon/plots/pna_carbon_bs4096_wk2_carbon_hardware.png) |
+| *Per-step energy by hardware (CPU/GPU/RAM)* | *Per-step CO₂ by hardware* |
 
 <table>
 <tr>
 <td width="340"><img src="pna_result/carbon/plots/pna_carbon_bs4096_wk2_pancake_energy_hardware.png" width="330"></td>
 <td valign="top">
 
-At bs4096, the **CPU dominates energy consumption** at **65.6%** (0.068 mWh per step), with the GPU accounting for **32.6%** (0.034 mWh) and RAM a negligible **1.8%**.
+At bs4096, the **CPU dominates energy consumption** at **65.6%** (0.068 mWh per step), with the GPU at **32.6%** (0.034 mWh) and RAM negligible at **1.8%**.
 
-Despite the GPU running at 92.3% utilization, CPU energy still dominates because CodeCarbon attributes CPU power at the constant TDP rate — the full rated thermal design power is charged for every second of wall-clock time. Since each bs4096 step takes ~614 ms, the CPU's constant power draw accumulates substantially.
+Despite the GPU running at 92.3% utilization, CPU energy dominates because CodeCarbon attributes CPU power at the constant TDP rate — the full rated thermal design power is charged for every second of wall-clock time.
 
-The practical implication: **reducing wall-clock training time** is the primary lever for reducing both energy consumption and carbon emissions.
-
-</td>
-</tr>
-</table>
-
-### Energy per Hardware Component Across Batch Sizes
-
-![Energy Hardware vs BS](pna_result/plots/bs_energy_hardware.png)
-
-Per-step energy for all hardware components grows with batch size (larger batches = more computation per step), but CPU consistently dominates. The GPU's share increases at larger batch sizes as higher utilization translates to higher power draw, narrowing the gap with the constant-TDP CPU attribution.
-
-### Per-Step Energy Traces
-
-| | |
-|:---:|:---:|
-| ![Energy Total (bs4096)](pna_result/carbon/plots/pna_carbon_bs4096_wk2_energy_total.png) | ![Carbon Total (bs4096)](pna_result/carbon/plots/pna_carbon_bs4096_wk2_carbon_total.png) |
-| *bs4096: per-step energy (mWh)* | *bs4096: per-step CO₂ emissions (µg CO₂eq)* |
-
-| | |
-|:---:|:---:|
-| ![Energy Total (bs512)](pna_result/carbon/plots/pna_carbon_bs512_wk2_energy_total.png) | ![Carbon Total (bs512)](pna_result/carbon/plots/pna_carbon_bs512_wk2_carbon_total.png) |
-| *bs512: per-step energy (mWh)* | *bs512: per-step CO₂ emissions (µg CO₂eq)* |
-
-<table>
-<tr>
-<td width="340"><img src="pna_result/carbon/plots/pna_carbon_bs512_wk2_pancake_energy_hardware.png" width="330"></td>
-<td valign="top">
-
-At bs512, the CPU's energy dominance is even more pronounced. The GPU operates at 44.6% utilization — drawing proportionally less power — while the CPU's constant TDP attribution runs at full rate for every millisecond of wall-clock time.
-
-The carbon emissions traces mirror the energy traces exactly (Quebec's grid carbon intensity is a constant factor), so the same conclusions apply: **choosing the right batch size matters for emissions**, and bs1024 is the sweet spot in this configuration.
+The carbon emissions breakdown mirrors the energy breakdown exactly (Quebec's grid carbon intensity is a constant factor).
 
 </td>
 </tr>
 </table>
 
----
+### Energy Across Batch Sizes
 
-## 7. Measurement Overhead
+| | |
+|:---:|:---:|
+| ![Energy per epoch](pna_result/plots/bs_energy_total.png) | ![Energy hardware per step](pna_result/plots/bs_energy_hardware.png) |
+| *Avg energy per epoch — bs1024 is the sweet spot* | *Per-step energy by hardware component* |
 
-Instrumenting training with utilization sampling and energy tracking adds minimal overhead. At bs4096, mean step latency across configurations:
+![Energy hardware per epoch](pna_result/plots/bs_energy_hardware_epoch.png)
 
-![Measurement Overhead](pna_result/plots/overhead.png)
-
-| Configuration          | Mean Step Latency | Overhead |
-|:----------------------:|:-----------------:|:--------:|
-| Simple (timers only)   | 614.0 ms          | baseline |
-| Util measurement       | 614.8 ms          | +0.1%    |
-| Carbon (CodeCarbon)    | 615.9 ms          | +0.3%    |
-
-All instrumentation adds less than **0.3% overhead**, confirming that the measurement tooling does not meaningfully distort any of the results presented in this report.
+**Bs1024 is the most energy-efficient** configuration (0.264 mWh/epoch). At bs4096, although GPU utilization is highest, the longer per-step computation outweighs the step-count reduction, pushing total energy back up to 0.310 mWh. The result is a U-shaped energy curve — the sweet spot for energy-efficient training is not at the largest batch size.
 
 ---
 
 ## 8. Summary
 
-1. **Batch size 4096** achieves the highest GPU utilization (**92.3%**) thanks to large CUDA kernels that saturate the GPU. With 2 DataLoader workers, data pipelining keeps the GPU near-continuously busy.
+1. **Raw measurement reveals two distinct anomalies**: GC spikes at smaller batch sizes and batch-shape dips at bs4096. Spike analysis confirms the first is caused by Python gen-2 garbage collection; the second is simply partial batches at epoch boundaries.
 
-2. **Batch size 1024** is the energy sweet spot — lowest epoch latency (**1.5 s**) and lowest energy per epoch (**0.264 mWh**). At bs4096, high GPU utilization doesn't fully compensate for longer steps.
+2. **Manual GC baseline** eliminates GC noise, enabling clean measurement of utilization and energy. The overhead of GC on tail latency is modest (~1–2% at p90) but the spikes are visually dramatic.
 
-3. **Step-time spikes have different root causes at different batch sizes:**
-   - At **bs4096**, the periodic short steps are simply **partial batches** at epoch boundaries (1808 vs 4096 graphs).
-   - At **bs512**, spikes are caused by **Python gen-2 garbage collection** pauses of 130–180 ms. Disabling GC eliminates them entirely.
+3. **Step time is dominated by forward at small batch sizes and backward at large batch sizes**, due to fixed per-layer overhead being amortized at larger scales while backward's per-element gradient cost grows.
 
-4. **GPU utilization scales monotonically** with batch size (44.6% → 55.9% → 63.2% → 92.3%) when DataLoader workers are used. This clean scaling is enabled by pipelining data preparation with GPU computation.
+4. **GPU utilization scales monotonically** with batch size (44.6% → 92.3%) thanks to DataLoader worker pipelining. Without workers, utilization shows a non-monotonic dip at intermediate sizes.
 
-5. **CPU energy dominates** at all batch sizes (~66% at bs4096) due to CodeCarbon's constant-TDP attribution model. Reducing wall-clock training time remains the primary lever for cutting carbon emissions.
+5. **Bs1024 is the energy sweet spot** (0.264 mWh/epoch, 1.5 s/epoch) — not bs4096, despite its higher GPU utilization. Larger batches increase per-step energy faster than they reduce step count.
 
-6. **Measurement overhead is negligible** (<0.3%), so all results can be taken at face value.
+6. **CPU energy dominates** (~66%) at all batch sizes due to CodeCarbon's constant-TDP attribution model. Reducing wall-clock time is the primary lever for cutting emissions.
