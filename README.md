@@ -2,19 +2,18 @@
 
 This report presents a profiling study of the **Principal Neighbourhood Aggregation (PNA)** graph neural network trained on a molecular property prediction task. We examine how batch size affects training latency, GPU utilisation, and energy consumption, and investigate the sources of step-time variability at different operating points.
 
-All experiments run on a single SLURM-managed GPU node with **2 DataLoader workers** to overlap data preparation with GPU computation. Four batch sizes are studied: **512**, **1024**, **2048**, and **4096** (the largest that fits in GPU memory). Batch size **4096** is the primary focus; **512** is the secondary reference for contrast.
-
 ---
 
 ## Table of Contents
 
 1. [The PNA Workload](#1-the-pna-workload)
-2. [Training at Batch Size 4096](#2-training-at-batch-size-4096)
-3. [Training at Batch Size 512 — GC Spike Attribution](#3-training-at-batch-size-512--gc-spike-attribution)
-4. [Batch-Size Comparison](#4-batch-size-comparison)
-5. [Energy and Carbon](#5-energy-and-carbon)
-6. [Measurement Overhead](#6-measurement-overhead)
-7. [Summary](#7-summary)
+2. [Experiment Setup](#2-experiment-setup)
+3. [Training at Batch Size 4096](#3-training-at-batch-size-4096)
+4. [Training at Batch Size 512 — GC Spike Attribution](#4-training-at-batch-size-512--gc-spike-attribution)
+5. [Batch-Size Comparison](#5-batch-size-comparison)
+6. [Energy and Carbon](#6-energy-and-carbon)
+7. [Measurement Overhead](#7-measurement-overhead)
+8. [Summary](#8-summary)
 
 ---
 
@@ -36,11 +35,52 @@ Each training step follows three phases:
  OPTIMIZER     Adam weight update + cosine-annealing LR schedule
 ```
 
-Data loading is handled by PyTorch Geometric's `DataLoader` with **2 worker processes** that pre-fetch and collate batches in parallel with GPU computation. This pipelining is critical for GPU utilisation — without it, the main thread alternates between CPU-bound collation and GPU dispatch, leaving the GPU idle during data preparation.
+Data loading is handled by PyTorch Geometric's `DataLoader`, which collates variable-size molecular graphs into a single batched graph. This involves stacking node feature tensors, concatenating and offset-shifting edge index tensors, and building batch assignment vectors — all Python-heavy operations that create significant GC pressure.
 
 ---
 
-## 2. Training at Batch Size 4096
+## 2. Experiment Setup
+
+### Dataset
+
+All experiments use **PCQM4Mv2**, a large-scale quantum chemistry dataset from the Open Graph Benchmark. Each sample is a molecular graph: nodes represent atoms (with features encoding atomic number, chirality, formal charge, etc.) and edges represent chemical bonds. The regression target is the HOMO-LUMO gap, a quantum property governing a molecule's optical and electronic behaviour.
+
+We use a **10 000-graph subset** of the training split. This is large enough to exhibit realistic batch-composition effects (partial batches, variable graph sizes) while keeping individual experiment runtimes manageable for sweeping across multiple configurations.
+
+### Training Configurations
+
+| Configuration | Batch Sizes | Workers | Purpose |
+|:---|:---|:---:|:---|
+| **Primary** | **4096** | 2 | Main focus — largest batch that fits in GPU memory. Reveals high-utilisation regime, batch-shape effects, and GC interactions at scale. |
+| **Secondary** | **512** | 2 | Contrast point — smaller batches expose GC spike patterns and different forward/backward cost balance. |
+| **Trend** | 1024, 2048 | 2 | Fill in the scaling curve between 512 and 4096 for utilisation, latency, and energy. |
+| **Worker sweep** | 4096 | 0, 2, 4 | Isolates the effect of DataLoader parallelism on GPU utilisation and throughput at fixed batch size. |
+
+All runs use **2 DataLoader workers** by default, which overlap CPU-side graph collation with GPU computation. The worker sweep at bs4096 additionally tests 0 and 4 workers to quantify the impact of this pipelining.
+
+**Batch size 4096** is the largest configuration that fits in GPU memory on our hardware. Attempts at 8192 result in out-of-memory errors. This makes 4096 the natural operating point for maximum GPU occupancy and the focus of our analysis. **Batch size 512** serves as a contrast — its short steps and frequent GC triggers produce qualitatively different behaviour, particularly around garbage-collection spikes.
+
+The intermediate sizes (1024, 2048) are included to show the **trend** when varying batch size: how GPU utilisation, epoch latency, and energy scale between the two extremes. They are not analysed in as much detail individually.
+
+### Measurement Types
+
+We build up instrumentation in layers, starting from a raw observation of the workload and progressively adding controlled measurements:
+
+**1. Raw measurement** (`pna_simple`) — The first pass captures the workload as-is, with Python's garbage collector running at default settings. CUDA-synchronised wall-clock timers record per-step and per-substep (forward, backward, optimizer) durations. At bs4096, batch shape metadata (num_graphs, num_nodes, num_edges) is also recorded to correlate step time with graph composition. This is the measurement that reveals the GC spike pattern, and motivates the next step.
+
+**2. GC spike attribution** (`pna_spike`) — A diagnostic experiment to confirm that the spikes observed in the raw measurement are caused by garbage collection. Two back-to-back runs are performed: one with GC **on** plus gen-2 event logging (via `gc.callbacks`), and one with GC **off** (`gc.disable()`). Comparing the two traces isolates GC as the sole source of latency variability.
+
+**3. GC-controlled end-to-end measurement** (`pna_manual_gc`) — With GC confirmed as the spike source, this configuration establishes a **clean baseline**. Automatic GC is disabled during training and a full gen-2 sweep is forced between epochs, keeping GC pauses outside any measurement window while preventing unbounded heap growth. This manual-GC strategy is used as the foundation for all subsequent measurements.
+
+**4. Hardware utilisation** (`pna_utils`) — Built on top of the GC-controlled baseline, this adds GPU utilisation sampling (via `pynvml`), per-process CPU utilisation (via `psutil`), and RAM usage. Samples are taken at 500 ms intervals to minimise overhead while capturing the utilisation landscape at each step.
+
+**5. Energy and carbon** (`pna_carbon`) — Also built on the GC-controlled baseline. Records CUDA-synced substep timing plus per-step energy consumption (CPU, GPU, RAM breakdown in kWh) and CO₂-equivalent emissions, measured by CodeCarbon's `OfflineEmissionsTracker` in task mode with 500 ms measurement windows.
+
+All measurement types add less than 0.3% overhead to step latency (see [Section 7](#7-measurement-overhead)), so the numbers they report are representative of the uninstrumented workload.
+
+---
+
+## 3. Training at Batch Size 4096
 
 At batch size 4096, the training dataset yields **3 steps per epoch**: two full batches of 4096 graphs and one partial batch of 1808 graphs (the remainder). This creates a distinctive repeating pattern.
 
@@ -89,7 +129,7 @@ GPU utilisation averages **92.3%** at this batch size — remarkably high for a 
 
 ---
 
-## 3. Training at Batch Size 512 — GC Spike Attribution
+## 4. Training at Batch Size 512 — GC Spike Attribution
 
 At batch size 512, each epoch has 20 steps and execution time is far more uniform — except for **periodic spikes** that significantly exceed the ~105 ms baseline:
 
@@ -140,7 +180,7 @@ GC events also affect bs4096 training when GC is enabled. The spike experiment a
 
 ---
 
-## 4. Batch-Size Comparison
+## 5. Batch-Size Comparison
 
 ### Epoch Latency
 
@@ -195,7 +235,7 @@ These intermediate sizes show a transition: at bs1024 the forward and backward p
 
 ---
 
-## 5. Energy and Carbon
+## 6. Energy and Carbon
 
 ### Energy per Epoch
 
@@ -267,7 +307,7 @@ The carbon emissions traces mirror the energy traces exactly (Quebec's grid carb
 
 ---
 
-## 6. Measurement Overhead
+## 7. Measurement Overhead
 
 Instrumenting training with utilisation sampling and energy tracking adds minimal overhead. At bs4096, mean step latency across configurations:
 
@@ -283,7 +323,7 @@ All instrumentation adds less than **0.3% overhead**, confirming that the measur
 
 ---
 
-## 7. Summary
+## 8. Summary
 
 1. **Batch size 4096** achieves the highest GPU utilisation (**92.3%**) thanks to large CUDA kernels that saturate the GPU. With 2 DataLoader workers, data pipelining keeps the GPU near-continuously busy.
 
