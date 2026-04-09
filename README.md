@@ -67,7 +67,7 @@ The intermediate sizes (1024, 2048) are included to show the **trend** when vary
 We build up instrumentation in layers, starting from a raw observation of the workload and progressively adding controlled measurements:
 
 | # | Measurement | What It Records | GC Control |
-|:-:|:---|:---|:---|:---|
+|:-:|:---|:---|:---|
 | 1 | **Raw measurement**  | CUDA-synced step & substep timing (forward, backward, optimizer). At bs4096 also records batch shape (num_graphs, num_nodes, num_edges). | GC on (default) |
 | 2 | **GC-controlled e2e Baseline** | | Same timing as raw, but represents a **clean baseline**: automatic GC disabled during training, full gen-2 sweep forced between epochs. Foundation for all subsequent measurements. | Manual (between epochs) |
 | 4 | **Hardware utilisation**  | Built on (2). Adds GPU util (`pynvml`), per-process CPU util (`psutil`), and RAM usage, sampled at 500 ms intervals. | Manual (between epochs) |
