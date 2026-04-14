@@ -26,6 +26,7 @@ if [[ ${EPOCHS} -lt 1  ]]; then EPOCHS=1;  fi
 if [[ ${EPOCHS} -gt 30 ]]; then EPOCHS=30; fi
 
 ### run PNA Carbon Trainer (energy consumption measurement)
+EPOCHS=120
 ${SCRIPTS_DIR}/srun.sh \
     --logging.level INFO \
     --model pna \

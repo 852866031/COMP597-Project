@@ -85,7 +85,7 @@ def plot_breakdown(df: pd.DataFrame, out_path: Path, batch_size: str) -> None:
 
     fig, ax = plt.subplots(figsize=(10, 4))
     fig.suptitle(
-        f"PNA Manual-GC — Execution Time Breakdown\n"
+        f"Manual-GC Baseline — Execution Time Breakdown\n"
         f"batch size {batch_size}",
         fontsize=13, fontweight="bold",
     )
@@ -134,27 +134,20 @@ def plot_combined(
         ax_oh = None
 
     fig.suptitle(
-        f"PNA Manual-GC — batch size {batch_size}",
-        fontsize=13, fontweight="bold",
+        f"Manual-GC Baseline (batch size {batch_size})",
+        fontsize=15, fontweight="bold", y=0.96,
     )
 
-    # ---- Left: substep breakdown ----
+    # ---- Left: total step time ----
     steps   = manual_df["step_idx"].to_numpy()
-    bottoms = np.zeros(len(manual_df))
+    step_ms = manual_df["step_ms"].to_numpy()
 
-    for col, label, color in zip(SUBSTEP_COLS, SUBSTEP_LABELS, SUBSTEP_COLORS):
-        vals = manual_df[col].to_numpy()
-        ax_bd.fill_between(steps, bottoms, bottoms + vals,
-                           alpha=0.80, color=color, label=label)
-        bottoms += vals
+    ax_bd.bar(steps, step_ms, width=1.0, color=STEP_COLOR, alpha=0.80)
 
-    ax_bd.plot(steps, manual_df["step_ms"].to_numpy(), color=STEP_COLOR,
-               linewidth=0.7, alpha=0.45, label="Total step (raw)")
-
-    ax_bd.legend(fontsize=8, loc="upper right")
-    ax_bd.set_xlabel("Step")
-    ax_bd.set_ylabel("Time (ms)")
-    ax_bd.set_title("Execution Time Breakdown", fontsize=11)
+    ax_bd.set_xlabel("Step", fontsize=14)
+    ax_bd.set_ylabel("Time (ms)", fontsize=14)
+    ax_bd.set_title("Per-Step Execution Time", fontsize=15)
+    ax_bd.tick_params(axis="both", labelsize=13)
     ax_bd.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax_bd.set_axisbelow(True)
 
@@ -172,28 +165,24 @@ def plot_combined(
                          alpha=0.85, zorder=3)
 
         y_max = max(vals)
-        for bar, val in zip(bars, vals):
-            ax_oh.text(bar.get_x() + bar.get_width() / 2,
-                       bar.get_height() + y_max * 0.01,
-                       f"{val:.1f} ms",
-                       ha="center", va="bottom", fontsize=9, fontweight="bold")
 
         # Saving annotation on manual-gc bar (negative = faster)
         ax_oh.text(bars[1].get_x() + bars[1].get_width() / 2,
-                   bars[1].get_height() + y_max * 0.07,
+                   bars[1].get_height() + y_max * 0.01,
                    f"{saving_pct:.1f}%",
-                   ha="center", va="bottom", fontsize=9,
+                   ha="center", va="bottom", fontsize=11,
                    color=MANUAL_COLOR, fontweight="bold")
 
         ax_oh.set_xticks([0, 1])
-        ax_oh.set_xticklabels(["Raw", "Manual-GC"], fontsize=9)
-        ax_oh.set_ylabel("p90 Step Latency (ms)")
-        ax_oh.set_title("GC Overhead", fontsize=11)
+        ax_oh.set_xticklabels(["Raw", "Manual-GC"], fontsize=13)
+        ax_oh.set_ylabel("p90 Step Latency (ms)", fontsize=14)
+        ax_oh.set_title("GC Overhead", fontsize=15)
+        ax_oh.tick_params(axis="both", labelsize=13)
         ax_oh.set_ylim(0, y_max * 1.22)
         ax_oh.yaxis.grid(True, linestyle="--", alpha=0.4)
         ax_oh.set_axisbelow(True)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  -> {out_path}")
@@ -271,7 +260,7 @@ def process_file(manual_path: Path, simple_path: Optional[Path],
     print(f"\nProcessing: {manual_path.name}  (bs={bs})")
 
     manual_df = pd.read_csv(manual_path)
-    required = {"step_idx", "step_ms", "forward_ms", "backward_ms", "optimizer_ms"}
+    required = {"step_idx", "step_ms"}
     if required - set(manual_df.columns):
         print(f"  [skip] missing columns in manual CSV")
         return
@@ -280,9 +269,11 @@ def process_file(manual_path: Path, simple_path: Optional[Path],
     if simple_path and simple_path.exists():
         simple_df = pd.read_csv(simple_path)
 
-    plot_breakdown(manual_df, out_dir / f"{stem}_breakdown.png", bs)
+    has_substeps = {"forward_ms", "backward_ms", "optimizer_ms"}.issubset(manual_df.columns)
+    if has_substeps:
+        plot_breakdown(manual_df, out_dir / f"{stem}_breakdown.png", bs)
+        plot_pancake(manual_df, out_dir / f"{stem}_pancake.png", bs)
     plot_combined(manual_df, simple_df, out_dir / f"{stem}.png", bs)
-    plot_pancake(manual_df, out_dir / f"{stem}_pancake.png", bs)
 
 
 # ---------------------------------------------------------------------------

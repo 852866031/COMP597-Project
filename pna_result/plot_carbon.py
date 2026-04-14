@@ -165,8 +165,7 @@ def _measured_bars(df: pd.DataFrame, col_per_step: str, scale: float = 1.0):
 # Plot 1 — per-step avg total energy
 # ---------------------------------------------------------------------------
 
-def plot_energy_total(step_df: pd.DataFrame, out_path: Path, meta: dict,
-                      epoch_starts: List[int]) -> None:
+def plot_energy_total(step_df: pd.DataFrame, out_path: Path, meta: dict) -> None:
     x, w, y = _measured_bars(step_df, "energy_consumed_per_step", KWH_TO_MWH)
     if len(x) == 0:
         print("  1. energy_total     -> [skip] no measured rows")
@@ -179,9 +178,6 @@ def plot_energy_total(step_df: pd.DataFrame, out_path: Path, meta: dict,
     )
 
     ax.bar(x, y, width=w, color="#457B9D", alpha=0.80, align="center")
-    _draw_epoch_vlines(ax, epoch_starts)
-    if epoch_starts:
-        ax.legend(fontsize=9, loc="upper right")
 
     ax.set_xlabel("Step")
     ax.set_ylabel("Energy per step (mWh)")
@@ -198,8 +194,7 @@ def plot_energy_total(step_df: pd.DataFrame, out_path: Path, meta: dict,
 # Plot 2 — per-step avg energy by hardware (stacked area over measured windows)
 # ---------------------------------------------------------------------------
 
-def plot_energy_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict,
-                         epoch_starts: List[int]) -> None:
+def plot_energy_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict) -> None:
     m = step_df["energy_consumed_per_step"].notna()
     dm = step_df[m].copy()
     if dm.empty:
@@ -225,7 +220,6 @@ def plot_energy_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict,
                         label=HW_LABELS[hw], step="mid")
         bottoms += vals
 
-    _draw_epoch_vlines(ax, epoch_starts)
     ax.set_xlabel("Step")
     ax.set_ylabel("Energy per step (mWh)")
     ax.legend(fontsize=9, loc="upper right")
@@ -242,8 +236,7 @@ def plot_energy_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict,
 # Plot 3 — per-step avg CO₂ emissions
 # ---------------------------------------------------------------------------
 
-def plot_carbon_total(step_df: pd.DataFrame, out_path: Path, meta: dict,
-                      epoch_starts: List[int]) -> None:
+def plot_carbon_total(step_df: pd.DataFrame, out_path: Path, meta: dict) -> None:
     x, w, y = _measured_bars(step_df, "emissions_per_step", KG_TO_UG)
     if len(x) == 0:
         print("  3. carbon_total     -> [skip] no measured rows")
@@ -256,9 +249,6 @@ def plot_carbon_total(step_df: pd.DataFrame, out_path: Path, meta: dict,
     )
 
     ax.bar(x, y, width=w, color="#E63946", alpha=0.80, align="center")
-    _draw_epoch_vlines(ax, epoch_starts)
-    if epoch_starts:
-        ax.legend(fontsize=9, loc="upper right")
 
     ax.set_xlabel("Step")
     ax.set_ylabel("CO₂ per step (µg CO₂eq)")
@@ -275,8 +265,7 @@ def plot_carbon_total(step_df: pd.DataFrame, out_path: Path, meta: dict,
 # Plot 4 — per-step avg CO₂ emissions by hardware
 # ---------------------------------------------------------------------------
 
-def plot_carbon_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict,
-                         epoch_starts: List[int]) -> None:
+def plot_carbon_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict) -> None:
     """Derive per-hardware emissions by apportioning total emissions by energy share."""
     m = step_df["energy_consumed_per_step"].notna()
     dm = step_df[m].copy()
@@ -311,7 +300,6 @@ def plot_carbon_hardware(step_df: pd.DataFrame, out_path: Path, meta: dict,
                         label=HW_LABELS[hw], step="mid")
         bottoms += hw_emit
 
-    _draw_epoch_vlines(ax, epoch_starts)
     ax.set_xlabel("Step")
     ax.set_ylabel("CO₂ per step (µg CO₂eq)")
     ax.legend(fontsize=9, loc="upper right")
@@ -438,6 +426,106 @@ def plot_pancake_carbon_hardware(step_df: pd.DataFrame, out_path: Path,
 
 
 # ---------------------------------------------------------------------------
+# Combined plot: pancake (left, 2 rows) + energy hardware + carbon hardware
+# ---------------------------------------------------------------------------
+
+def plot_combined_energy_carbon(step_df: pd.DataFrame, out_path: Path,
+                                meta: dict) -> None:
+    """Layout: left = energy pancake spanning 2 rows, right-top = energy hardware,
+    right-bottom = carbon hardware."""
+    import matplotlib.gridspec as gridspec
+
+    m = step_df["energy_consumed_per_step"].notna()
+    dm = step_df[m].copy()
+    if dm.empty:
+        print("  combined -> [skip] no measured rows")
+        return
+    dm = dm[:100]
+    fig = plt.figure(figsize=(10, 4))
+    gs = gridspec.GridSpec(2, 2, width_ratios=[2, 1.2], hspace=0.4, wspace=0.05)
+
+    ax_energy  = fig.add_subplot(gs[0, 0])   # left top
+    ax_carbon  = fig.add_subplot(gs[1, 0])   # left bottom
+    ax_pancake = fig.add_subplot(gs[:, 1])   # right, spans both rows
+
+    # --- Left: energy pancake ---
+    values, labels, colors = [], [], []
+    for hw in HW_ORDER:
+        col = f"{hw}_energy_per_step"
+        if col not in dm.columns:
+            continue
+        values.append(float(dm[col].mean()) * KWH_TO_MWH)
+        labels.append(HW_LABELS[hw])
+        colors.append(HW_COLORS[hw])
+    total = sum(values)
+
+    result = _draw_pancake(ax_pancake, values, labels, colors,
+                           f"mean step\n{total:.3f} mWh")
+    ax_pancake.set_title("Energy Share", fontsize=15)
+
+    # Collect legend handles from pancake
+    hw_handles = []
+    if result:
+        wedges, lbls, vals = result
+        hw_handles = list(wedges)
+
+    # --- Right top: energy by hardware ---
+    x = dm["step_idx"].to_numpy()
+    bottoms = np.zeros(len(dm))
+    for hw in HW_ORDER:
+        col = f"{hw}_energy_per_step"
+        if col not in dm.columns:
+            continue
+        vals_hw = dm[col].fillna(0.0).to_numpy() * KWH_TO_MWH
+        ax_energy.fill_between(x, bottoms, bottoms + vals_hw,
+                               alpha=0.80, color=HW_COLORS[hw], step="mid")
+        bottoms += vals_hw
+    ax_energy.set_ylabel("Energy (mWh)", fontsize=14)
+    ax_energy.set_title("Per-Step Energy by Hardware", fontsize=15)
+    ax_energy.tick_params(axis="both", labelsize=13)
+    ax_energy.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_energy.set_axisbelow(True)
+
+    # --- Right bottom: carbon by hardware ---
+    total_energy = dm["energy_consumed_per_step"].to_numpy()
+    total_emit   = dm["emissions_per_step"].fillna(0.0).to_numpy()
+    safe_energy  = np.where(total_energy > 0, total_energy, np.nan)
+
+    bottoms = np.zeros(len(dm))
+    for hw in HW_ORDER:
+        col = f"{hw}_energy_per_step"
+        if col not in dm.columns:
+            continue
+        hw_energy = dm[col].fillna(0.0).to_numpy()
+        hw_emit = np.where(
+            np.isfinite(safe_energy),
+            total_emit * (hw_energy / safe_energy),
+            0.0,
+        ) * KG_TO_UG
+        ax_carbon.fill_between(x, bottoms, bottoms + hw_emit,
+                               alpha=0.80, color=HW_COLORS[hw], step="mid")
+        bottoms += hw_emit
+    ax_carbon.set_xlabel("Step", fontsize=14)
+    ax_carbon.set_ylabel("CO₂ (µg CO₂eq)", fontsize=14)
+    ax_carbon.set_title("Per-Step CO₂ by Hardware", fontsize=15)
+    ax_carbon.tick_params(axis="both", labelsize=13)
+    ax_carbon.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_carbon.set_axisbelow(True)
+
+    # --- Global legend at top ---
+    hw_labels = [HW_LABELS[hw] for hw in HW_ORDER if f"{hw}_energy_per_step" in dm.columns]
+    if hw_handles:
+        fig.legend(hw_handles, hw_labels, loc="upper center",
+                   bbox_to_anchor=(0.5, 1.05), ncol=len(hw_labels),
+                   fontsize=13, frameon=False)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  combined             -> {out_path}")
+
+
+# ---------------------------------------------------------------------------
 # Discovery + orchestration
 # ---------------------------------------------------------------------------
 
@@ -471,14 +559,30 @@ def process_file(step_csv: Path) -> None:
     out  = _out_dir(step_csv)
     stem = re.sub(r"_steps$", "", step_csv.stem)
 
-    epoch_starts = _epoch_starts(step_df)
-
-    plot_energy_total(   step_df, out / f"{stem}_energy_total.png",          meta, epoch_starts)
-    plot_energy_hardware(step_df, out / f"{stem}_energy_hardware.png",       meta, epoch_starts)
-    plot_carbon_total(   step_df, out / f"{stem}_carbon_total.png",          meta, epoch_starts)
-    plot_carbon_hardware(step_df, out / f"{stem}_carbon_hardware.png",       meta, epoch_starts)
+    plot_energy_total(   step_df, out / f"{stem}_energy_total.png",          meta)
+    plot_energy_hardware(step_df, out / f"{stem}_energy_hardware.png",       meta)
+    plot_carbon_total(   step_df, out / f"{stem}_carbon_total.png",          meta)
+    plot_carbon_hardware(step_df, out / f"{stem}_carbon_hardware.png",       meta)
     plot_pancake_energy_hardware(step_df, out / f"{stem}_pancake_energy_hardware.png", meta)
     plot_pancake_carbon_hardware(step_df, out / f"{stem}_pancake_carbon_hardware.png", meta)
+
+    # For bs4096, also generate plots using only the first 100 steps in a separate dir
+    if meta.get("batch_size") == "4096" and len(step_df) > 100:
+        out_100 = step_csv.parent / "plots" / "bs4096_first100"
+        out_100.mkdir(parents=True, exist_ok=True)
+        df_100 = _enrich_step_df(df_raw.head(100))
+        meta_100 = dict(meta, batch_size="4096 (first 100 steps)")
+        plot_energy_total(   df_100, out_100 / f"{stem}_energy_total.png",          meta_100)
+        plot_energy_hardware(df_100, out_100 / f"{stem}_energy_hardware.png",       meta_100)
+        plot_carbon_total(   df_100, out_100 / f"{stem}_carbon_total.png",          meta_100)
+        plot_carbon_hardware(df_100, out_100 / f"{stem}_carbon_hardware.png",       meta_100)
+        plot_pancake_energy_hardware(df_100, out_100 / f"{stem}_pancake_energy_hardware.png", meta_100)
+        plot_pancake_carbon_hardware(df_100, out_100 / f"{stem}_pancake_carbon_hardware.png", meta_100)
+        plot_combined_energy_carbon(df_100, out_100 / f"{stem}_combined.png", meta_100)
+        print(f"  Also generated first-100 plots in {out_100}")
+
+    # Combined plot for all batch sizes
+    plot_combined_energy_carbon(step_df, out / f"{stem}_combined.png", meta)
 
 
 def main() -> None:

@@ -41,13 +41,13 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 
 BAR_COLORS = [
-    "#888888",   # baseline    — grey
+    "#888888",   # raw         — grey
     "#4C72B0",   # gc-manual   — blue
     "#2A9D8F",   # util        — teal
     "#E76F51",   # carbon      — terracotta
 ]
 BAR_LABELS = [
-    "simple",
+    "raw",
     "baseline\n(gc-manual)",
     "util-measure",
     "carbon-measure",
@@ -77,8 +77,8 @@ def _discover(directory: Path, subdir: str, pattern: str) -> Optional[Path]:
     return matches[0] if matches else None
 
 
-def discover_simple(directory: Path) -> Optional[Path]:
-    return _discover(directory, "simple", "pna_simple_bs4096_wk2.csv")
+def discover_base(directory: Path) -> Optional[Path]:
+    return _discover(directory, "base", "pna_base_bs4096_wk2.csv")
 
 
 def discover_gc_manual(directory: Path) -> Optional[Path]:
@@ -105,7 +105,7 @@ def discover_carbon(directory: Path) -> Optional[Path]:
 # Per-workload latency extraction
 # ---------------------------------------------------------------------------
 
-def load_simple_mean(path: Path) -> float:
+def load_base_mean(path: Path) -> float:
     df = pd.read_csv(path)
     if "step_ms" not in df.columns:
         raise ValueError(f"'step_ms' column not found in {path}")
@@ -160,12 +160,7 @@ def plot_overhead(values: list, labels: list, colors: list,
 
     x = np.arange(len(vals))
 
-    fig, ax = plt.subplots(figsize=(8, 5))
-    fig.suptitle(
-        f"PNA — Measurement Overhead Comparison\n"
-        f"mean step latency (all steps) · batch size {batch_size}",
-        fontsize=13, fontweight="bold",
-    )
+    fig, ax = plt.subplots(figsize=(8, 2.3))
 
     bars = ax.bar(x, vals, width=0.55, color=cols, alpha=0.85, zorder=3)
 
@@ -186,23 +181,17 @@ def plot_overhead(values: list, labels: list, colors: list,
             sign = "+" if overhead_pct >= 0 else ""
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
-                top + max(vals) * 0.055,
+                top + max(vals) * 0.125,
                 f"{sign}{overhead_pct:.1f}%",
                 ha="center", va="bottom", fontsize=9,
                 color="#E63946", fontweight="bold",
             )
 
-    # Baseline reference line at bar 2 height
-    if baseline is not None and len(vals) > 2:
-        ax.axhline(y=baseline, color=cols[1], linestyle="--",
-                   linewidth=1.2, alpha=0.7, zorder=2,
-                   label=f"baseline mean ({baseline:.1f} ms)")
-        ax.legend(fontsize=9, loc="upper left")
-
     ax.set_xticks(x)
     ax.set_xticklabels(lbls, fontsize=10)
     ax.set_ylabel("Mean Step Latency (ms)")
-    ax.set_ylim(0, max(vals) * 1.28)
+    ax.set_ylim(0, max(vals) * 1.35)
+    ax.set_yticks(np.arange(0, 800, 300))
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -221,8 +210,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description="Plot measurement overhead comparison across PNA workloads."
     )
-    parser.add_argument("--simple", metavar="CSV",
-                        help="Path to simple pna_simple_bs*.csv")
+    parser.add_argument("--base", metavar="CSV",
+                        help="Path to base pna_base_bs*.csv")
     parser.add_argument("--gc-manual", metavar="CSV", dest="gc_manual",
                         help="Path to manual pna_manual_gc_bs*.csv")
     parser.add_argument("--utils", metavar="CSV",
@@ -235,14 +224,14 @@ def main() -> None:
 
     # Resolve paths — use CLI override if given, otherwise auto-discover
     paths = {
-        "simple":    Path(args.simple).resolve()    if args.simple    else discover_simple(script_dir),
+        "base":      Path(args.base).resolve()      if args.base      else discover_base(script_dir),
         "gc_manual": Path(args.gc_manual).resolve() if args.gc_manual else discover_gc_manual(script_dir),
         "utils":     Path(args.utils).resolve()     if args.utils     else discover_utils(script_dir),
         "carbon":    Path(args.carbon).resolve()    if args.carbon    else discover_carbon(script_dir),
     }
 
     loaders = {
-        "simple":    load_simple_mean,
+        "base":      load_base_mean,
         "gc_manual": load_gc_manual_mean,
         "utils":     load_utils_mean,
         "carbon":    load_carbon_mean,

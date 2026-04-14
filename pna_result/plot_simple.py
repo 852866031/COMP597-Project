@@ -136,9 +136,8 @@ def _overlay_batch_shape(ax: plt.Axes, df: pd.DataFrame) -> None:
                  linewidth=1.2, alpha=0.75, linestyle="--",
                  label=BATCH_SHAPE_LABELS[col])
 
-    ax2.set_ylabel("Batch shape", fontsize=9)
-    ax2.tick_params(axis="y", labelsize=8)
-    ax2.legend(fontsize=8, loc="lower right")
+    ax2.set_ylabel("Batch shape", fontsize=14)
+    ax2.tick_params(axis="y", labelsize=13)
 
 
 # ---------------------------------------------------------------------------
@@ -182,34 +181,35 @@ def plot_total_time_batch_shape(df: pd.DataFrame, out_path: Path,
         print("  1b.[skip] batch shape columns not found")
         return
 
+    df = df.head(50)
     steps   = df["step_idx"].to_numpy()
     step_ms = df["step_ms"].to_numpy()
 
-    fig, ax = plt.subplots(figsize=(10, 4))
-    fig.suptitle(
-        f"PNA — Total Step Execution Time + Batch Shape\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
-    )
+    fig, ax = plt.subplots(figsize=(10, 3.5))
 
     ax.bar(steps, step_ms, width=1.0, color=STEP_COLOR, alpha=0.80,
            label="Step time")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Time (ms)")
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("Time (ms)", fontsize=14)
+    ax.tick_params(axis="both", labelsize=13)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
     _overlay_batch_shape(ax, df)
 
-    # Merge legends from both axes
+    # Merge legends from both axes into one, placed outside the plot
     handles, labels = ax.get_legend_handles_labels()
-    ax2 = [c for c in fig.get_axes() if c is not ax]
-    if ax2:
-        h2, l2 = ax2[0].get_legend_handles_labels()
+    ax2_list = [c for c in fig.get_axes() if c is not ax]
+    if ax2_list:
+        h2, l2 = ax2_list[0].get_legend_handles_labels()
         handles += h2
         labels  += l2
-    ax.legend(handles, labels, fontsize=8, loc="upper right")
+        ax2_list[0].tick_params(axis="y", labelsize=13)
+    fig.legend(handles, labels, loc="upper center",
+               bbox_to_anchor=(0.5, 0.99), ncol=len(labels),
+               fontsize=13, frameon=False)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 1, 0.87])
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  1b.total_time_batch  -> {out_path}")
@@ -455,6 +455,159 @@ def plot_epoch_latency_vs_bs(bs_csv_map: dict, out_path: Path) -> None:
     print(f"  bs epoch latency  -> {out_path}")
 
 
+# ---------------------------------------------------------------------------
+# Combined pancake plot — all batch sizes in a 2×2 grid
+# ---------------------------------------------------------------------------
+
+def plot_pancake_combined(bs_map: dict, out_path: Path) -> None:
+    """2×2 grid of donut charts with a single global legend."""
+    batch_sizes = sorted(bs_map.keys())
+    n = len(batch_sizes)
+    if n == 0:
+        return
+
+    nrows = (n + 1) // 2
+    ncols = 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6, 3.2 * nrows))
+
+    if nrows == 1:
+        axes = [axes]
+    flat_axes = [ax for row in axes for ax in row]
+
+    global_wedges = None
+    global_labels = None
+
+    for i, bs in enumerate(batch_sizes):
+        ax = flat_axes[i]
+        df = pd.read_csv(bs_map[bs])
+
+        fwd_mean  = float(df["forward_ms"].mean())
+        bwd_mean  = float(df["backward_ms"].mean())
+        opt_mean  = float(df["optimizer_ms"].mean())
+        step_mean = float(df["step_ms"].mean())
+        other     = max(0.0, step_mean - fwd_mean - bwd_mean - opt_mean)
+
+        values = [fwd_mean, bwd_mean, opt_mean, other]
+        labels = SUBSTEP_LABELS + ["Other"]
+        colors = SUBSTEP_COLORS + ["#d3d3d3"]
+
+        nonzero = [(v, l, c) for v, l, c in zip(values, labels, colors) if v > 0.05]
+        vals, lbls, cols = zip(*nonzero)
+
+        wedges, _, autotexts = ax.pie(
+            vals,
+            labels=None,
+            colors=cols,
+            autopct="%1.1f%%",
+            startangle=90,
+            pctdistance=0.75,
+            wedgeprops=dict(width=0.48, edgecolor="white", linewidth=1.2),
+        )
+        for at in autotexts:
+            at.set_fontsize(10)
+            at.set_fontweight("bold")
+
+        # Nudge small-slice labels apart to avoid overlap
+        if len(autotexts) >= 2:
+            for j in range(len(autotexts) - 1):
+                pos_a = autotexts[j].get_position()
+                pos_b = autotexts[j + 1].get_position()
+                dy = abs(pos_a[1] - pos_b[1])
+                if dy < 0.12:
+                    shift = (0.12 - dy) / 2 + 0.04
+                    autotexts[j].set_position((pos_a[0], pos_a[1] + shift))
+                    autotexts[j + 1].set_position((pos_b[0], pos_b[1] - shift))
+
+        ax.text(0, 0, f"{step_mean:.0f} ms",
+                ha="center", va="center", fontsize=10,
+                fontweight="bold", color="#333333")
+        ax.set_title(f"Batch Size {bs}", fontsize=13, pad=2)
+
+        if global_wedges is None:
+            global_wedges = wedges
+            global_labels = list(lbls)
+
+    # Hide unused axes
+    for j in range(len(batch_sizes), len(flat_axes)):
+        flat_axes[j].set_visible(False)
+
+    # Global legend at bottom
+    fig.legend(global_wedges, global_labels, loc="lower center",
+               bbox_to_anchor=(0.5, 0.0), ncol=len(global_labels),
+               fontsize=12, frameon=False)
+
+    fig.subplots_adjust(hspace=0.15, wspace=0.05)
+    fig.tight_layout(rect=[0, 0.04, 1, 0.95])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  bs pancake combined -> {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Substep contribution line plot — % vs batch size
+# ---------------------------------------------------------------------------
+
+def plot_substep_contribution(bs_map: dict, out_path: Path) -> None:
+    """Line plot: x = batch size, y = substep % of step time, one curve per substep."""
+    batch_sizes = sorted(bs_map.keys())
+    if len(batch_sizes) < 2:
+        return
+
+    fwd_pcts  = []
+    bwd_pcts  = []
+    opt_pcts  = []
+    other_pcts = []
+
+    for bs in batch_sizes:
+        df = pd.read_csv(bs_map[bs])
+        fwd   = float(df["forward_ms"].mean())
+        bwd   = float(df["backward_ms"].mean())
+        opt   = float(df["optimizer_ms"].mean())
+        total = float(df["step_ms"].mean())
+        other = max(0.0, total - fwd - bwd - opt)
+
+        fwd_pcts.append(fwd / total * 100 if total > 0 else 0)
+        bwd_pcts.append(bwd / total * 100 if total > 0 else 0)
+        opt_pcts.append(opt / total * 100 if total > 0 else 0)
+        other_pcts.append(other / total * 100 if total > 0 else 0)
+
+    x_labels = [str(bs) for bs in batch_sizes]
+    x = np.arange(len(batch_sizes))
+
+    fig, ax = plt.subplots(figsize=(8, 3))
+
+    ax.plot(x, fwd_pcts,   marker="o", linewidth=2, color=SUBSTEP_COLORS[0], label="Forward")
+    ax.plot(x, bwd_pcts,   marker="s", linewidth=2, color=SUBSTEP_COLORS[1], label="Backward")
+    ax.plot(x, opt_pcts,   marker="^", linewidth=2, color=SUBSTEP_COLORS[2], label="Optimizer")
+    ax.plot(x, other_pcts, marker="d", linewidth=2, color="#888888",          label="Other")
+
+    # Annotate values
+    for xi, vals in [(x, fwd_pcts), (x, bwd_pcts), (x, opt_pcts), (x, other_pcts)]:
+        for xv, yv in zip(xi, vals):
+            if yv > 3:
+                ax.annotate(f"{yv:.1f}%", (xv, yv), textcoords="offset points",
+                            xytext=(0, 8), ha="center", fontsize=10, fontweight="bold")
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(x_labels, fontsize=13)
+    ax.set_xlabel("Batch Size", fontsize=14)
+    ax.set_ylabel("Contribution (%)", fontsize=14)
+    ax.tick_params(axis="y", labelsize=13)
+    ax.set_ylim(0, 100)
+    ax.set_yticks(np.arange(0, 101, 25))
+    ax.legend(fontsize=13, loc="upper center", bbox_to_anchor=(0.5, 1.22),
+              ncol=4, frameon=False)
+    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax.set_axisbelow(True)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  substep contribution -> {out_path}")
+
+
 def process_file(steps_path: Path) -> None:
     print(f"\nProcessing: {steps_path}")
     df = pd.read_csv(steps_path)
@@ -519,8 +672,15 @@ def main() -> None:
             continue
         process_file(path)
 
-    # Batch-size comparison plot (requires ≥2 batch sizes)
+    # Combined pancake plot (requires ≥2 batch sizes)
     bs_map = _bs_representative_csvs(csv_files)
+    if len(bs_map) >= 2:
+        print("\nGenerating combined pancake:")
+        plot_pancake_combined(bs_map, script_dir / "plots" / "bs_pancake_combined.png")
+        print("\nGenerating substep contribution line plot:")
+        plot_substep_contribution(bs_map, script_dir / "plots" / "bs_substep_contribution.png")
+
+    # Batch-size comparison plot (requires ≥2 batch sizes)
     if len(bs_map) >= 2:
         print("\nGenerating batch-size comparison:")
         plot_epoch_latency_vs_bs(bs_map, script_dir / "plots" / "bs_epoch_latency.png")

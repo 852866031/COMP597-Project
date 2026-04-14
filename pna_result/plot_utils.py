@@ -104,10 +104,10 @@ def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
     vals  = series[mask].to_numpy()
     avg   = float(vals.mean())
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(10, 3.5))
     fig.suptitle(
-        f"PNA Utils — GPU Utilisation\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
+        f"GPU Utilization ({_subtitle(meta)})",
+        fontsize=15, fontweight="bold",
     )
 
     ax.plot(steps, vals, color=GPU_COLOR, linewidth=0.7, alpha=0.45, zorder=1)
@@ -117,10 +117,12 @@ def plot_util_gpu(df: pd.DataFrame, out_path: Path, meta: dict,
 
     _draw_epoch_vlines(ax, epoch_step_ids)
 
-    ax.set_xlabel("Step")
-    ax.set_ylabel("GPU Utilisation (%)")
-    ax.set_ylim(0, 100)
-    ax.legend(fontsize=9, loc="upper right")
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("GPU Utilization (%)", fontsize=14)
+    ax.set_ylim(0, 120)
+    ax.tick_params(axis="both", labelsize=13)
+    ax.set_yticks(np.arange(0, 101, 20))
+    ax.legend(fontsize=13, loc="upper right")
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -146,10 +148,10 @@ def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
     sampled_steps = df.loc[mask, "step_idx"].to_numpy()
     sampled_vals  = series[mask].to_numpy()
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(10, 3.5))
     fig.suptitle(
-        f"PNA Utils — CPU Utilisation (per-process)\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
+        f"CPU Utilization ({_subtitle(meta)})",
+        fontsize=15, fontweight="bold",
     )
 
     ax.plot(sampled_steps, sampled_vals, color="#457B9D", linewidth=0.8, alpha=0.45)
@@ -157,11 +159,13 @@ def plot_util_cpu(df: pd.DataFrame, out_path: Path, meta: dict,
 
     _draw_epoch_vlines(ax, epoch_step_ids)
     if epoch_step_ids:
-        ax.legend(fontsize=9, loc="upper right")
+        ax.legend(fontsize=13, loc="upper right")
 
-    ax.set_xlabel("Step")
-    ax.set_ylabel("CPU Utilisation (%)")
-    ax.set_ylim(0, 100)
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("CPU Utilization (%)", fontsize=14)
+    ax.set_ylim(0, 120)
+    ax.set_yticks(np.arange(0, 101, 20))
+    ax.tick_params(axis="both", labelsize=13)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -187,10 +191,10 @@ def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
     sampled_steps = df.loc[mask, "step_idx"].to_numpy()
     sampled_gb    = series[mask].to_numpy() / 1024.0   # MiB → GB
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(10, 3.5))
     fig.suptitle(
-        f"PNA Utils — RAM Utilisation\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
+        f"System RAM Usage ({_subtitle(meta)})",
+        fontsize=15, fontweight="bold",
     )
 
     ax.plot(sampled_steps, sampled_gb, color="#2A9D8F", linewidth=0.8, alpha=0.45)
@@ -198,13 +202,14 @@ def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
 
     _draw_epoch_vlines(ax, epoch_step_ids)
     if epoch_step_ids:
-        ax.legend(fontsize=9, loc="upper right")
+        ax.legend(fontsize=13, loc="upper right")
 
     y_upper = sampled_gb.max() * 1.15   # 15% headroom above peak
 
-    ax.set_xlabel("Step")
-    ax.set_ylabel("RAM Used (GB)")
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("RAM Used (GB)", fontsize=14)
     ax.set_ylim(0, y_upper)
+    ax.tick_params(axis="both", labelsize=13)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -212,6 +217,92 @@ def plot_util_ram(df: pd.DataFrame, out_path: Path, meta: dict,
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  3. util_ram  -> {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Combined 3-panel figure (GPU / CPU / RAM)
+# ---------------------------------------------------------------------------
+
+def plot_combined(df: pd.DataFrame, out_path: Path, meta: dict,
+                  epoch_step_ids: List[int]) -> None:
+    """Three vertically stacked subplots with a single shared legend."""
+    gpu_series = pd.to_numeric(df.get("gpu_util", pd.Series(dtype=float)), errors="coerce")
+    cpu_series = pd.to_numeric(df.get("cpu_util", pd.Series(dtype=float)), errors="coerce")
+    ram_series = pd.to_numeric(df.get("ram_used_mb", pd.Series(dtype=float)), errors="coerce")
+
+    gpu_mask = gpu_series.notna()
+    cpu_mask = cpu_series.notna()
+    ram_mask = ram_series.notna()
+
+    if gpu_mask.sum() == 0 and cpu_mask.sum() == 0 and ram_mask.sum() == 0:
+        print("  combined -> [skip] no util data")
+        return
+
+    fig, (ax_gpu, ax_cpu, ax_ram) = plt.subplots(
+        3, 1, figsize=(10, 8), sharex=True,
+    )
+    # --- GPU ---
+    if gpu_mask.sum() > 0:
+        steps_g = df.loc[gpu_mask, "step_idx"].to_numpy()
+        vals_g  = gpu_series[gpu_mask].to_numpy()
+        avg_g   = float(vals_g.mean())
+        ax_gpu.plot(steps_g, vals_g, color=GPU_COLOR, linewidth=0.7, alpha=0.45, zorder=1)
+        ax_gpu.scatter(steps_g, vals_g, color=GPU_COLOR, s=22, zorder=3)
+        ax_gpu.axhline(y=avg_g, color=GPU_COLOR, linestyle="--", linewidth=1.4,
+                       alpha=0.85, zorder=2, label=f"avg ({avg_g:.1f}%)")
+        ax_gpu.legend(fontsize=13, loc="lower right")
+    _draw_epoch_vlines(ax_gpu, epoch_step_ids)
+    ax_gpu.set_ylabel("GPU Utilization (%)", fontsize=14)
+    ax_gpu.set_ylim(0, 110)
+    ax_gpu.set_yticks(np.arange(0, 101, 20))
+    ax_gpu.set_title("GPU Utilization", fontsize=15)
+    ax_gpu.tick_params(axis="both", labelsize=13)
+    ax_gpu.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_gpu.set_axisbelow(True)
+    ax_gpu.legend(fontsize=13, loc="lower right")
+
+    # --- CPU ---
+    if cpu_mask.sum() > 0:
+        steps_c = df.loc[cpu_mask, "step_idx"].to_numpy()
+        vals_c  = cpu_series[cpu_mask].to_numpy()
+        avg_c   = float(vals_c.mean())
+        ax_cpu.plot(steps_c, vals_c, color="#457B9D", linewidth=0.8, alpha=0.45)
+        ax_cpu.scatter(steps_c, vals_c, color="#457B9D", s=20, zorder=3)
+        ax_cpu.axhline(y=avg_c, color="#457B9D", linestyle="--", linewidth=1.4,
+                       alpha=0.85, zorder=2, label=f"avg ({avg_c:.1f}%)")
+    _draw_epoch_vlines(ax_cpu, epoch_step_ids)
+    ax_cpu.set_ylabel("CPU Utilization (%)", fontsize=14)
+    ax_cpu.set_ylim(0, 110)
+    ax_cpu.set_yticks(np.arange(0, 101, 20))
+    ax_cpu.set_title("CPU Utilization", fontsize=15)
+    ax_cpu.tick_params(axis="both", labelsize=13)
+    ax_cpu.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_cpu.set_axisbelow(True)
+    ax_cpu.legend(fontsize=13, loc="lower right")
+
+    # --- RAM ---
+    if ram_mask.sum() > 0:
+        steps_r = df.loc[ram_mask, "step_idx"].to_numpy()
+        vals_r  = ram_series[ram_mask].to_numpy() / 1024.0
+        ax_ram.plot(steps_r, vals_r, color="#2A9D8F", linewidth=0.8, alpha=0.45)
+        ax_ram.scatter(steps_r, vals_r, color="#2A9D8F", s=20, zorder=3)
+        y_upper = vals_r.max() * 1.15
+    else:
+        y_upper = 1.0
+    _draw_epoch_vlines(ax_ram, epoch_step_ids)
+    ax_ram.set_xlabel("Step", fontsize=14)
+    ax_ram.set_ylabel("RAM Used (GB)", fontsize=14)
+    ax_ram.set_ylim(0, y_upper)
+    ax_ram.set_title("System RAM Usage", fontsize=15)
+    ax_ram.tick_params(axis="both", labelsize=13)
+    ax_ram.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_ram.set_axisbelow(True)
+    ax_ram.legend(fontsize=13, loc="lower right")
+
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  combined -> {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +336,7 @@ def process_file(steps_path: Path) -> None:
     plot_util_gpu(df, out / f"{stem}_util_gpu.png", meta, epoch_starts)
     plot_util_cpu(df, out / f"{stem}_util_cpu.png", meta, epoch_starts)
     plot_util_ram(df, out / f"{stem}_util_ram.png", meta, epoch_starts)
+    plot_combined(df, out / f"{stem}_combined.png", meta, epoch_starts)
 
 
 def main() -> None:

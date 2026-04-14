@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-plot_workers.py — compare PNA metrics across DataLoader worker counts (bs=512 fixed).
+plot_workers.py — compare PNA metrics across DataLoader worker counts (bs=4096 fixed).
 
 All worker counts must be present; the script exits with an error listing
 every missing file rather than silently skipping.
 
-Sources required (4 files total — 2 per worker count):
+Sources required (6 files total — 2 per worker count):
   pna_result/utils/pna_utils_bs4096_wk{N}_steps.csv
-      Step-level hardware utilisation samples from PNAUtilsStats.
+      Step-level hardware utilization samples from PNAUtilsStats.
 
   pna_result/carbon/pna_carbon_bs4096_wk{N}_steps.csv
       Per-step energy data from PNACarbonStats.  Energy columns are empty for
@@ -15,10 +15,8 @@ Sources required (4 files total — 2 per worker count):
 
 Output — pna_result/plots/
 ------
-  1. wk_gpu_util.png         — avg GPU utilisation (%) per worker count
-  2. wk_cpu_util.png         — avg CPU utilisation (%) per worker count (per-process)
-  3. wk_energy_total.png     — mean per-step avg total energy (mWh) per worker count
-  4. wk_energy_hardware.png  — clustered bar: x = hardware (cpu/gpu/ram), clusters = worker counts
+  1. wk_util_combined.png    — GPU + CPU utilization side by side
+  2. wk_energy_combined.png  — total energy + energy by hardware side by side
 
 Usage
 -----
@@ -28,7 +26,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 import matplotlib
 matplotlib.use("Agg")
@@ -133,156 +131,273 @@ def _save(fig: plt.Figure, out_path: Path, label: str) -> None:
     print(f"  Saved -> {out_path.name}")
 
 
-def _simple_bars(ax, totals: List[float], ylabel: str, fmt: str = "{:.3f}",
-                 epoch_counts: Optional[List[int]] = None) -> None:
-    x    = np.arange(len(WORKER_COUNTS))
-    bars = ax.bar(x, totals, width=0.5, color=WK_COLORS, alpha=0.85, zorder=3)
-
-    valid = [h for h in totals if not np.isnan(h)]
-    y_max = max(valid) if valid else 1.0
-
-    for i, (bar, val) in enumerate(zip(bars, totals)):
-        if np.isnan(val):
-            continue
-        top = bar.get_height() + y_max * 0.01
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            top,
-            fmt.format(val),
-            ha="center", va="bottom", fontsize=9, fontweight="bold",
-        )
-        if epoch_counts is not None:
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                top + y_max * 0.055,
-                f"({epoch_counts[i]} epochs)",
-                ha="center", va="bottom", fontsize=8, color="#555555",
-            )
-
-    ax.set_xticks(x)
-    ax.set_xticklabels(WK_LABELS, fontsize=10)
-    ax.set_xlabel("DataLoader Workers")
-    ax.set_ylabel(ylabel)
-    ax.set_ylim(0, y_max * 1.25)
-    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
-
-
-# ---------------------------------------------------------------------------
-# Plot 1 — GPU utilisation average
-# ---------------------------------------------------------------------------
-
-def plot_gpu_util_avg(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
-    avgs: List[float] = []
-    for wk in WORKER_COUNTS:
-        df  = utils_data[wk]
-        col = pd.to_numeric(df.get("gpu_util", pd.Series(dtype=float)), errors="coerce").dropna()
-        avgs.append(float(col.mean()) if not col.empty else float("nan"))
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    fig.suptitle(
-        f"PNA — GPU Utilisation vs DataLoader Workers (bs={BS})\n"
-        "mean of all sampled forward + backward steps (all epochs)",
-        fontsize=13, fontweight="bold",
-    )
-
-    _simple_bars(ax, avgs, "GPU Utilisation (%)", fmt="{:.1f}%")
-    ax.set_ylim(0, 100)
-    _save(fig, out_path, "wk_gpu_util")
-
-
-# ---------------------------------------------------------------------------
-# Plot 2 — CPU utilisation average (per-process)
-# ---------------------------------------------------------------------------
-
-def plot_cpu_util_avg(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
-    avgs: List[float] = []
-    for wk in WORKER_COUNTS:
-        df  = utils_data[wk]
-        col = pd.to_numeric(df.get("cpu_util", pd.Series(dtype=float)), errors="coerce").dropna()
-        avgs.append(float(col.mean()) if not col.empty else float("nan"))
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    fig.suptitle(
-        f"PNA — CPU Utilisation vs DataLoader Workers (bs={BS})\n"
-        "mean of all sampled forward + backward steps (all epochs)",
-        fontsize=13, fontweight="bold",
-    )
-
-    _simple_bars(ax, avgs, "CPU Utilisation (%)", fmt="{:.1f}%")
-    ax.set_ylim(0, 100)
-    _save(fig, out_path, "wk_cpu_util")
-
-
-# ---------------------------------------------------------------------------
-# Plot 3 — total energy aggregated across all epochs
-# ---------------------------------------------------------------------------
-
-def plot_energy_total(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
-    avgs: List[float] = []
-    for wk in WORKER_COUNTS:
-        df = step_data[wk]
-        col = df["energy_consumed_per_step"].dropna()
-        avgs.append(float(col.mean()) * KWH_TO_MWH if not col.empty else float("nan"))
-
-    fig, ax = plt.subplots(figsize=(7, 5))
-    fig.suptitle(
-        f"PNA — Per-Step Avg Total Energy vs DataLoader Workers (bs={BS})\n"
-        "mean over measurement windows · CodeCarbon (mWh)",
-        fontsize=13, fontweight="bold",
-    )
-
-    _simple_bars(ax, avgs, "Energy (mWh)", fmt="{:.3f}")
-    _save(fig, out_path, "wk_energy_total")
-
-
-# ---------------------------------------------------------------------------
-# Plot 4 — per-step avg energy breakdown by hardware component
-# ---------------------------------------------------------------------------
-
 _HW_COMPONENTS = ["cpu", "gpu", "ram"]
 _HW_LABELS     = {"cpu": "CPU", "gpu": "GPU", "ram": "RAM"}
-_HW_COLORS     = {"cpu": "#E76F51", "gpu": "#2A9D8F", "ram": "#8338EC"}
 
 
-def plot_energy_hardware(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
-    """Clustered bar chart: x = hardware component (cpu/gpu/ram), clusters = worker counts."""
-    avgs: Dict[str, List[float]] = {hw: [] for hw in _HW_COMPONENTS}
+# ---------------------------------------------------------------------------
+# Plot 1 — GPU + CPU utilization side by side
+# ---------------------------------------------------------------------------
+
+def plot_util_combined(utils_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    gpu_avgs: List[float] = []
+    cpu_avgs: List[float] = []
+    for wk in WORKER_COUNTS:
+        df = utils_data[wk]
+        gpu = pd.to_numeric(df.get("gpu_util", pd.Series(dtype=float)), errors="coerce").dropna()
+        cpu = pd.to_numeric(df.get("cpu_util", pd.Series(dtype=float)), errors="coerce").dropna()
+        gpu_avgs.append(float(gpu.mean()) if not gpu.empty else float("nan"))
+        cpu_avgs.append(float(cpu.mean()) if not cpu.empty else float("nan"))
+
+    fig, (ax_gpu, ax_cpu) = plt.subplots(1, 2, figsize=(12, 3.2))
+    fig.suptitle(
+        "Utilization Varying Workers",
+        fontsize=15, fontweight="bold", y=1,
+    )
+
+    x = np.arange(len(WORKER_COUNTS))
+
+    # Left: GPU
+    bars_g = ax_gpu.bar(x, gpu_avgs, width=0.5, color=WK_COLORS, alpha=0.85, zorder=3)
+    valid_g = [v for v in gpu_avgs if not np.isnan(v)]
+    y_max_g = max(valid_g) if valid_g else 1.0
+    for bar, val in zip(bars_g, gpu_avgs):
+        if np.isnan(val):
+            continue
+        ax_gpu.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + y_max_g * 0.01,
+                    f"{val:.1f}%",
+                    ha="center", va="bottom", fontsize=12, fontweight="bold")
+    ax_gpu.set_xticks(x)
+    ax_gpu.set_xticklabels(WK_LABELS, fontsize=13)
+    ax_gpu.set_xlabel("Workers", fontsize=14)
+    ax_gpu.set_ylabel("GPU Utilization (%)", fontsize=14)
+    ax_gpu.set_title("GPU Utilization", fontsize=15)
+    ax_gpu.tick_params(axis="y", labelsize=13)
+    ax_gpu.set_ylim(0, 105)
+    ax_gpu.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_gpu.set_axisbelow(True)
+
+    # Right: CPU
+    bars_c = ax_cpu.bar(x, cpu_avgs, width=0.5, color=WK_COLORS, alpha=0.85, zorder=3)
+    valid_c = [v for v in cpu_avgs if not np.isnan(v)]
+    y_max_c = max(valid_c) if valid_c else 1.0
+    for bar, val in zip(bars_c, cpu_avgs):
+        if np.isnan(val):
+            continue
+        ax_cpu.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + y_max_c * 0.01,
+                    f"{val:.1f}%",
+                    ha="center", va="bottom", fontsize=12, fontweight="bold")
+    ax_cpu.set_xticks(x)
+    ax_cpu.set_xticklabels(WK_LABELS, fontsize=13)
+    ax_cpu.set_xlabel("Workers", fontsize=14)
+    ax_cpu.set_ylabel("CPU Utilization (%)", fontsize=14)
+    ax_cpu.set_title("CPU Utilization", fontsize=15)
+    ax_cpu.tick_params(axis="y", labelsize=13)
+    ax_cpu.set_ylim(0, 105)
+    ax_cpu.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_cpu.set_axisbelow(True)
+
+    fig.subplots_adjust(wspace=0.35)
+    fig.tight_layout(rect=[0, 0, 1, 1.05])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved -> {out_path.name}")
+
+
+# ---------------------------------------------------------------------------
+# Plot 2 — total energy + energy by hardware side by side
+# ---------------------------------------------------------------------------
+
+def plot_energy_combined(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    """Left: total energy per epoch. Right: clustered hw energy per epoch."""
+
+    # --- Compute total energy per epoch ---
+    total_avgs: List[float] = []
+    for wk in WORKER_COUNTS:
+        df = step_data[wk]
+        measured = df[df["energy_consumed"].notna()]
+        if measured.empty or "epoch" not in measured.columns:
+            total_avgs.append(float("nan"))
+            continue
+        epoch_totals = measured.groupby("epoch")["energy_consumed"].sum()
+        total_avgs.append(float(epoch_totals.mean()) * KWH_TO_MWH)
+
+    # --- Compute per-epoch energy by hardware ---
+    hw_avgs: Dict[str, List[float]] = {hw: [] for hw in _HW_COMPONENTS}
     for wk in WORKER_COUNTS:
         df = step_data[wk]
         for hw in _HW_COMPONENTS:
-            col = f"{hw}_energy_per_step"
-            vals = df[col].dropna() if col in df.columns else pd.Series(dtype=float)
-            avgs[hw].append(float(vals.mean()) * KWH_TO_MWH if not vals.empty else float("nan"))
+            col = f"{hw}_energy"
+            if col not in df.columns or "epoch" not in df.columns:
+                hw_avgs[hw].append(float("nan"))
+                continue
+            measured = df[df[col].notna()]
+            if measured.empty:
+                hw_avgs[hw].append(float("nan"))
+                continue
+            epoch_totals = measured.groupby("epoch")[col].sum()
+            hw_avgs[hw].append(float(epoch_totals.mean()) * KWH_TO_MWH)
 
-    n_hw = len(_HW_COMPONENTS)
-    n_wk = len(WORKER_COUNTS)
-    x_base  = np.arange(n_hw)
-    offsets = (np.arange(n_wk) - (n_wk - 1) / 2.0) * (0.8 / n_wk)
-    width   = 0.8 / n_wk
-
-    fig, ax = plt.subplots(figsize=(9, 5))
+    # --- Figure ---
+    fig, (ax_tot, ax_hw) = plt.subplots(1, 2, figsize=(12, 3.2))
     fig.suptitle(
-        f"PNA — Per-Step Avg Energy by Hardware vs DataLoader Workers (bs={BS})\n"
-        "mean over measurement windows · CodeCarbon (mWh)",
-        fontsize=13, fontweight="bold",
+        "Epoch Energy Varying Workers",
+        fontsize=15, fontweight="bold", y=1.02,
     )
 
+    x = np.arange(len(WORKER_COUNTS))
+
+    # Left: total energy per epoch
+    bars = ax_tot.bar(x, total_avgs, width=0.5, color=WK_COLORS,
+                      alpha=0.85, zorder=3)
+    valid = [v for v in total_avgs if not np.isnan(v)]
+    y_max = max(valid) if valid else 1.0
+    for bar, val in zip(bars, total_avgs):
+        if np.isnan(val):
+            continue
+        ax_tot.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + y_max * 0.01,
+                    f"{val:.3f}",
+                    ha="center", va="bottom", fontsize=12, fontweight="bold")
+    ax_tot.set_xticks(x)
+    ax_tot.set_xticklabels(WK_LABELS, fontsize=13)
+    ax_tot.set_xlabel("Workers", fontsize=14)
+    ax_tot.set_ylabel("Energy per Epoch (mWh)", fontsize=14)
+    ax_tot.set_title("Total Energy", fontsize=15)
+    ax_tot.tick_params(axis="y", labelsize=13)
+    ax_tot.set_ylim(0, y_max * 1.18)
+    ax_tot.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_tot.set_axisbelow(True)
+
+    # Right: clustered hardware energy per epoch
+    n_hw = len(_HW_COMPONENTS)
+    n_wk = len(WORKER_COUNTS)
+    x_hw = np.arange(n_hw)
+    offsets = (np.arange(n_wk) - (n_wk - 1) / 2.0) * (0.8 / n_wk)
+    width = 0.8 / n_wk
+
     for i, (wk, color, label) in enumerate(zip(WORKER_COUNTS, WK_COLORS, WK_LABELS)):
-        xs   = x_base + offsets[i]
-        vals = [avgs[hw][i] for hw in _HW_COMPONENTS]
-        ax.bar(xs, vals, width=width, color=color, alpha=0.85,
-               label=label, zorder=3, edgecolor="white", linewidth=0.5)
+        xs = x_hw + offsets[i]
+        vals = [hw_avgs[hw][i] for hw in _HW_COMPONENTS]
+        ax_hw.bar(xs, vals, width=width, color=color, alpha=0.85,
+                  label=label, zorder=3, edgecolor="white", linewidth=0.5)
 
-    ax.set_xticks(x_base)
-    ax.set_xticklabels([_HW_LABELS[hw] for hw in _HW_COMPONENTS], fontsize=11)
-    ax.set_xlabel("Hardware Component")
-    ax.set_ylabel("Energy per step (mWh)")
-    ax.legend(fontsize=9, loc="upper right")
-    ax.yaxis.grid(True, linestyle="--", alpha=0.4)
-    ax.set_axisbelow(True)
+    ax_hw.set_xticks(x_hw)
+    ax_hw.set_xticklabels([_HW_LABELS[hw] for hw in _HW_COMPONENTS], fontsize=13)
+    ax_hw.set_xlabel("Hardware", fontsize=14)
+    ax_hw.set_ylabel("Energy per Epoch (mWh)", fontsize=14)
+    ax_hw.set_title("Energy by Hardware", fontsize=15)
+    ax_hw.tick_params(axis="y", labelsize=13)
+    ax_hw.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_hw.set_axisbelow(True)
 
-    _save(fig, out_path, "wk_energy_hardware")
+    fig.subplots_adjust(wspace=0.35)
+    fig.tight_layout(rect=[0, 0, 1, 1.05])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved -> {out_path.name}")
+
+
+# ---------------------------------------------------------------------------
+# Plot 3 — epoch latency + substep breakdown side by side
+# ---------------------------------------------------------------------------
+
+_SUBSTEPS       = ["forward_ms", "backward_ms", "optimizer_ms"]
+_SUBSTEP_LABELS = ["Forward", "Backward", "Optimizer"]
+_SUBSTEP_COLORS = ["#2A9D8F", "#E76F51", "#8338EC"]   # teal / coral / purple
+
+
+def plot_latency_combined(step_data: Dict[int, pd.DataFrame], out_path: Path) -> None:
+    """Left: avg epoch latency. Right: clustered substep bars (x = substep, clusters = wk)."""
+
+    # --- Compute avg epoch latency ---
+    epoch_avgs: List[float] = []
+    for wk in WORKER_COUNTS:
+        df = step_data[wk]
+        if "epoch" in df.columns:
+            epoch_totals = df.groupby("epoch")["step_ms"].sum()
+            epoch_avgs.append(float(epoch_totals.mean()) / 1000.0
+                              if not epoch_totals.empty else float("nan"))
+        else:
+            epoch_avgs.append(float("nan"))
+
+    # --- Compute avg substep times ---
+    substep_avgs: Dict[str, List[float]] = {s: [] for s in _SUBSTEPS}
+    for wk in WORKER_COUNTS:
+        df = step_data[wk]
+        for s in _SUBSTEPS:
+            col = pd.to_numeric(df.get(s, pd.Series(dtype=float)), errors="coerce").dropna()
+            substep_avgs[s].append(float(col.mean()) if not col.empty else float("nan"))
+
+    # --- Figure ---
+    fig, (ax_lat, ax_sub) = plt.subplots(1, 2, figsize=(12, 3.2))
+    fig.suptitle(
+        "Epoch Latency Varying Workers",
+        fontsize=15, fontweight="bold", y=1.02,
+    )
+
+    x = np.arange(len(WORKER_COUNTS))
+
+    # Left: epoch latency
+    bars = ax_lat.bar(x, epoch_avgs, width=0.5, color=WK_COLORS,
+                      alpha=0.85, zorder=3)
+    valid = [v for v in epoch_avgs if not np.isnan(v)]
+    y_max = max(valid) if valid else 1.0
+    for bar, val in zip(bars, epoch_avgs):
+        if np.isnan(val):
+            continue
+        ax_lat.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + y_max * 0.01,
+                    f"{val:.1f}s",
+                    ha="center", va="bottom", fontsize=12, fontweight="bold")
+    ax_lat.set_xticks(x)
+    ax_lat.set_xticklabels(WK_LABELS, fontsize=13)
+    ax_lat.set_xlabel("Workers", fontsize=14)
+    ax_lat.set_ylabel("Epoch Latency (s)", fontsize=14)
+    ax_lat.set_title("Epoch Latency", fontsize=15)
+    ax_lat.tick_params(axis="y", labelsize=13)
+    ax_lat.set_ylim(0, y_max * 1.18)
+    ax_lat.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_lat.set_axisbelow(True)
+
+    # Right: clustered substep breakdown
+    n_sub = len(_SUBSTEPS)
+    n_wk  = len(WORKER_COUNTS)
+    x_sub = np.arange(n_sub)
+    offsets = (np.arange(n_wk) - (n_wk - 1) / 2.0) * (0.8 / n_wk)
+    width = 0.8 / n_wk
+
+    for i, (wk, color, label) in enumerate(zip(WORKER_COUNTS, WK_COLORS, WK_LABELS)):
+        xs = x_sub + offsets[i]
+        vals = [substep_avgs[s][i] for s in _SUBSTEPS]
+        ax_sub.bar(xs, vals, width=width, color=color, alpha=0.85,
+                   label=label, zorder=3, edgecolor="white", linewidth=0.5)
+
+    ax_sub.set_xticks(x_sub)
+    ax_sub.set_xticklabels(_SUBSTEP_LABELS, fontsize=13)
+    ax_sub.set_xlabel("Substep", fontsize=14)
+    ax_sub.set_ylabel("Mean Substep Time (ms)", fontsize=14)
+    ax_sub.set_title("Substep Breakdown", fontsize=15)
+    ax_sub.tick_params(axis="y", labelsize=13)
+    ax_sub.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax_sub.set_axisbelow(True)
+
+    # Global legend at top
+    handles, labels = ax_sub.get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center",
+               bbox_to_anchor=(0.5, 0.97), ncol=len(labels),
+               fontsize=13, frameon=False)
+
+    fig.subplots_adjust(wspace=0.35)
+    fig.tight_layout(rect=[0, 0, 1, 1])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  Saved -> {out_path.name}")
 
 
 # ---------------------------------------------------------------------------
@@ -304,10 +419,9 @@ def main() -> None:
     print("Done.\n")
 
     print("Generating plots:")
-    plot_gpu_util_avg(utils_data,   out_dir / "wk_gpu_util.png")
-    plot_cpu_util_avg(utils_data,   out_dir / "wk_cpu_util.png")
-    plot_energy_total(step_data,    out_dir / "wk_energy_total.png")
-    plot_energy_hardware(step_data, out_dir / "wk_energy_hardware.png")
+    plot_util_combined(utils_data, out_dir / "wk_util_combined.png")
+    plot_energy_combined(step_data, out_dir / "wk_energy_combined.png")
+    plot_latency_combined(step_data, out_dir / "wk_latency_combined.png")
 
     print("\nDone.")
 

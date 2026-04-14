@@ -30,6 +30,8 @@ if [[ ${EPOCHS} -gt 30 ]]; then EPOCHS=30; fi
 ### gen-2 collections are forced between epochs to keep pauses outside measured
 ### steps.  Step latency is recorded by PNAManualGCStats (--trainer_stats
 ### pna_manual_gc) which writes to pna_result/manual/.
+#EPOCHS=60
+EPOCHS=120
 ${SCRIPTS_DIR}/srun.sh \
     --logging.level INFO \
     --model pna \

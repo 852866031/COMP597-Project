@@ -46,7 +46,7 @@ ${SCRIPTS_DIR}/srun.sh \
     --model pna \
     --trainer pna \
     --data pna_dataset \
-    --model_configs.pna.epochs ${EPOCHS} \
+    --model_configs.pna.epochs 15 \
     --model_configs.pna.batch_size ${BS} \
     --model_configs.pna.num_workers ${WK} \
     --trainer_stats pna_carbon \

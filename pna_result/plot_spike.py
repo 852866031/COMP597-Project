@@ -49,7 +49,7 @@ def discover_gc_on_csvs(directory: Path):
     spike_dir = directory / "spike"
     if not spike_dir.is_dir():
         return []
-    return sorted(spike_dir.glob("pna_spike_bs*_wk2_gc_on.csv"))
+    return sorted(spike_dir.glob("pna_spike_bs*_wk0_gc_on.csv"))
 
 
 def find_gc_off_csv(gc_on_path: Path) -> Optional[Path]:
@@ -84,10 +84,10 @@ def plot_breakdown_gc_on(df_gc_on: pd.DataFrame, out_path: Path,
     steps   = df_gc_on["step_idx"].to_numpy()
     bottoms = np.zeros(len(df_gc_on))
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(10, 3.5))
     fig.suptitle(
-        f"PNA Spike — Execution Time Breakdown (GC on)\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
+        f"Spike Analysis: Execution Time Breakdown",
+        fontsize=15, fontweight="bold",
     )
 
     for col, label, color in zip(SUBSTEP_COLS, SUBSTEP_LABELS, SUBSTEP_COLORS):
@@ -99,10 +99,10 @@ def plot_breakdown_gc_on(df_gc_on: pd.DataFrame, out_path: Path,
     ax.plot(steps, df_gc_on["step_ms"].to_numpy(), color=STEP_COLOR,
             linewidth=0.7, alpha=0.45, label="Total step (raw)")
 
-    ax.set_ylim(0, y_max * 1.05)
+    ax.set_ylim(0, y_max * 1.4)
     ax.legend(fontsize=9, loc="upper right")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Time (ms)")
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("Time (ms)", fontsize=14)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -121,10 +121,10 @@ def plot_breakdown_gc_on_annotated(df_gc_on: pd.DataFrame, gc_df: pd.DataFrame,
     steps   = df_gc_on["step_idx"].to_numpy()
     bottoms = np.zeros(len(df_gc_on))
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(10, 3.5))
     fig.suptitle(
-        f"PNA Spike — Breakdown with GC Gen-2 Annotated\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
+        f"Spike Analysis: Breakdown with GC Gen-2 Annotated",
+        fontsize=15, fontweight="bold",
     )
 
     for col, label, color in zip(SUBSTEP_COLS, SUBSTEP_LABELS, SUBSTEP_COLORS):
@@ -142,7 +142,7 @@ def plot_breakdown_gc_on_annotated(df_gc_on: pd.DataFrame, gc_df: pd.DataFrame,
         ax.axvline(step, color="#cc0000", linewidth=1.2,
                    linestyle="--", alpha=0.75, zorder=5)
 
-    ax.set_ylim(0, y_max * 1.05)
+    ax.set_ylim(0, y_max * 1.4)
 
     # Build legend with GC handle
     substep_handles = [
@@ -161,8 +161,8 @@ def plot_breakdown_gc_on_annotated(df_gc_on: pd.DataFrame, gc_df: pd.DataFrame,
         fontsize=9, loc="upper right",
     )
 
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Time (ms)")
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("Time (ms)", fontsize=14)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -181,10 +181,10 @@ def plot_breakdown_gc_off(df_gc_off: pd.DataFrame, out_path: Path,
     steps   = df_gc_off["step_idx"].to_numpy()
     bottoms = np.zeros(len(df_gc_off))
 
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(10, 3.5))
     fig.suptitle(
-        f"PNA Spike — Execution Time Breakdown (GC off)\n{_subtitle(meta)}",
-        fontsize=13, fontweight="bold",
+        f"Spike Analysis (GC off)",
+        fontsize=15, fontweight="bold",
     )
 
     for col, label, color in zip(SUBSTEP_COLS, SUBSTEP_LABELS, SUBSTEP_COLORS):
@@ -196,10 +196,10 @@ def plot_breakdown_gc_off(df_gc_off: pd.DataFrame, out_path: Path,
     ax.plot(steps, df_gc_off["step_ms"].to_numpy(), color=STEP_COLOR,
             linewidth=0.7, alpha=0.45, label="Total step (raw)")
 
-    ax.set_ylim(0, y_max * 1.05)
+    ax.set_ylim(0, y_max * 1.4)
     ax.legend(fontsize=9, loc="upper right")
-    ax.set_xlabel("Step")
-    ax.set_ylabel("Time (ms)")
+    ax.set_xlabel("Step", fontsize=14)
+    ax.set_ylabel("Time (ms)", fontsize=14)
     ax.yaxis.grid(True, linestyle="--", alpha=0.4)
     ax.set_axisbelow(True)
 
@@ -207,6 +207,101 @@ def plot_breakdown_gc_off(df_gc_off: pd.DataFrame, out_path: Path,
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  3. breakdown_gc_off          -> {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Combined 3-panel figure (gc_on / annotated / gc_off)
+# ---------------------------------------------------------------------------
+
+def plot_combined(df_gc_on: pd.DataFrame, gc_df: pd.DataFrame,
+                  df_gc_off: pd.DataFrame, out_path: Path,
+                  meta: dict, y_max: float) -> None:
+    """Three vertically stacked subplots with a single shared legend at the top."""
+    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+
+    ylim = y_max * 1.4
+
+    # Stacking order for combined plot: optimizer (bottom), backward, forward (top)
+    _COMB_COLS   = ["backward_ms", "forward_ms", "optimizer_ms"]
+    _COMB_LABELS = [ "Backward", "Forward", "Optimizer"]
+    _COMB_COLORS = ["#DD8452", "#4C72B0", "#55A868"]
+
+    # --- Panel 1: GC on breakdown ---
+    steps_on = df_gc_on["step_idx"].to_numpy()
+    bottoms = np.zeros(len(df_gc_on))
+    fill_handles = []
+    for col, label, color in zip(_COMB_COLS, _COMB_LABELS, _COMB_COLORS):
+        vals = df_gc_on[col].to_numpy()
+        h = ax1.fill_between(steps_on, bottoms, bottoms + vals,
+                             alpha=0.80, color=color)
+        fill_handles.append(h)
+        bottoms += vals
+    step_line, = ax1.plot(steps_on, df_gc_on["step_ms"].to_numpy(),
+                          color=STEP_COLOR, linewidth=0.7, alpha=0.45)
+    ax1.set_ylim(0, ylim)
+    ax1.set_ylabel("Time (ms)", fontsize=14)
+    ax1.set_title("Execution Time Breakdown (Automatic GC on)", fontsize=15)
+    ax1.tick_params(axis="both", labelsize=13)
+    ax1.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax1.set_axisbelow(True)
+
+    # --- Panel 2: GC on annotated ---
+    bottoms = np.zeros(len(df_gc_on))
+    for col, color in zip(_COMB_COLS, _COMB_COLORS):
+        vals = df_gc_on[col].to_numpy()
+        ax2.fill_between(steps_on, bottoms, bottoms + vals,
+                         alpha=0.80, color=color)
+        bottoms += vals
+    ax2.plot(steps_on, df_gc_on["step_ms"].to_numpy(),
+             color=STEP_COLOR, linewidth=0.7, alpha=0.45)
+    gc_line = None
+    if not gc_df.empty:
+        gc_steps = gc_df["step_idx"].tolist()
+        for step in gc_steps:
+            ax2.axvline(step, color="#cc0000", linewidth=1.2,
+                        linestyle="--", alpha=0.75, zorder=5)
+        gc_line = mlines.Line2D([], [], color="#cc0000", linewidth=1.2,
+                                linestyle="--")
+    ax2.set_ylim(0, ylim)
+    ax2.set_ylabel("Time (ms)", fontsize=14)
+    ax2.set_title("Breakdown with GC Gen-2 Annotated", fontsize=15)
+    ax2.tick_params(axis="both", labelsize=13)
+    ax2.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax2.set_axisbelow(True)
+
+    # --- Panel 3: GC off ---
+    if not df_gc_off.empty:
+        steps_off = df_gc_off["step_idx"].to_numpy()
+        bottoms = np.zeros(len(df_gc_off))
+        for col, color in zip(_COMB_COLS, _COMB_COLORS):
+            vals = df_gc_off[col].to_numpy()
+            ax3.fill_between(steps_off, bottoms, bottoms + vals,
+                             alpha=0.80, color=color)
+            bottoms += vals
+        ax3.plot(steps_off, df_gc_off["step_ms"].to_numpy(),
+                 color=STEP_COLOR, linewidth=0.7, alpha=0.45)
+    ax3.set_ylim(0, ylim)
+    ax3.set_xlabel("Step", fontsize=14)
+    ax3.set_ylabel("Time (ms)", fontsize=14)
+    ax3.set_title("Execution Time Breakdown (GC off)", fontsize=15)
+    ax3.tick_params(axis="both", labelsize=13)
+    ax3.yaxis.grid(True, linestyle="--", alpha=0.4)
+    ax3.set_axisbelow(True)
+
+    # --- Global legend at top ---
+    handles = list(fill_handles)
+    labels  = list(_COMB_LABELS)
+    if gc_line is not None:
+        handles.append(gc_line)
+        labels.append("GC-gen-2 event")
+    fig.legend(handles, labels, loc="upper center",
+               bbox_to_anchor=(0.5, 0.99), ncol=len(labels),
+               fontsize=13, frameon=False)
+
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  4. combined          -> {out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +342,9 @@ def process_gc_on(gc_on_path: Path) -> None:
         plot_breakdown_gc_off(df_gc_off, out_dir / f"{base_stem}_breakdown_gc_off.png", meta, y_max)
     else:
         print("  [skip] no gc_off CSV found — skipping gc_off plot")
+
+    # Combined 3-panel figure
+    plot_combined(df_gc_on, gc_df, df_gc_off, out_dir / f"{base_stem}_combined.png", meta, y_max)
 
 
 def main() -> None:

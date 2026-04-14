@@ -1,0 +1,78 @@
+\documentclass[10pt,twocolumn]{article}
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{amsmath}
+\usepackage{enumitem}
+\usepackage[font=small,labelfont=bf]{caption}
+\usepackage{xcolor}
+
+\title{PNA GNN: Performance, Energy, and Efficiency Analysis}
+\author{Jiaxuan Chen \\ COMP 597 --- Sustainability in Systems Design}
+\date{}
+
+\begin{document}
+\maketitle
+
+% ===========================================================================
+\section{Workload Description}
+% ===========================================================================
+
+\subsection{Model, Dataset, and Task}
+
+We study the \textbf{Principal Neighbourhood Aggregation (PNA)} graph neural network~\cite{corso2020pna}, a GNN architecture designed for graph-level property prediction. PNA is distinguished from simpler message-passing networks by its use of \emph{multiple} aggregation functions (mean, min, max, std) applied simultaneously at each layer, combined with degree-dependent scalers (identity, amplification, attenuation) that normalise aggregated messages by neighbourhood size. This multi-aggregator, multi-scaler design gives PNA significantly higher expressive power on graphs with heterogeneous node degrees.
+
+The model is trained on a \textbf{10\,000-graph subset} of the \textbf{PCQM4Mv2} dataset from the Open Graph Benchmark~\cite{hu2021ogblsc}. Each sample is a molecular graph: nodes represent atoms (with 9-dimensional feature vectors encoding atomic number, chirality, formal charge, etc.), edges represent chemical bonds (with 3-dimensional edge attributes), and the regression target is the HOMO-LUMO energy gap --- a quantum-chemical property governing a molecule's optical and electronic behaviour. The loss function is L1 (mean absolute error) between the predicted and normalised target values.
+
+The model architecture consists of:
+\begin{itemize}[nosep]
+    \item \textbf{64 stacked PNA convolution layers}, each applying 4 aggregators $\times$ 3 scalers followed by an MLP, iteratively updating node embeddings by aggregating neighbour information;
+    \item \textbf{Global max pooling}, converting variable-sized per-node embeddings into a fixed-size graph-level embedding;
+    \item \textbf{A linear head}, mapping the graph embedding to a single scalar prediction.
+\end{itemize}
+
+The model has approximately 4 million trainable parameters. Optimisation uses Adam (lr = $10^{-6}$, weight decay = 0) with a CosineAnnealingLR learning rate schedule.
+
+\subsection{Hardware Setup}
+
+All experiments run on a single SLURM-managed GPU node (\texttt{gpu-teach-03}) with the following resources allocated per job:
+\begin{itemize}[nosep]
+    \item \textbf{GPU}: 1$\times$ NVIDIA GPU (dedicated via \texttt{--gpus=1})
+    \item \textbf{CPU}: 4 cores (\texttt{--cpus-per-task=4})
+    \item \textbf{Memory}: 4\,GB minimum allocation
+    \item \textbf{Software}: PyTorch with PyTorch Geometric, CodeCarbon for energy measurement, pynvml for GPU utilisation sampling, psutil for CPU/RAM monitoring
+\end{itemize}
+
+\subsection{Terminology: Step, Phases, and Epoch}
+
+We adopt the following terminology consistently throughout this report:
+
+\begin{description}[nosep, leftmargin=1em, style=nextline]
+    \item[Step] One complete training iteration over a single batch. Each step consists of three sequential \emph{phases}, and is the finest granularity at which we record timing and energy data.
+    \item[Forward phase] The forward pass through all 64 PNA convolution layers, global max pooling, the linear prediction head, and L1 loss computation. This phase is timed from just before the model call to just after the loss is computed. CUDA synchronisation is performed at both boundaries.
+    \item[Backward phase] The backward pass, comprising \texttt{optimizer.zero\_grad()} followed by \texttt{loss.backward()}, which backpropagates gradients through the entire 64-layer autograd graph. CUDA-synchronised at both boundaries.
+    \item[Optimizer phase] The parameter update via \texttt{optimizer.step()} (Adam) and learning rate schedule update via \texttt{lr\_scheduler.step()}. CUDA-synchronised at both boundaries. This is typically the shortest phase.
+    \item[Epoch] One full pass over the training dataset. At batch size $B$, the dataset of $N = 10\,000$ graphs yields $\lceil N/B \rceil$ steps per epoch. For example, batch size 4096 produces 3 steps per epoch (two full batches of 4096 graphs and one partial batch of 1808 graphs), while batch size 512 produces 20 steps per epoch. The number of epochs scales with batch size relative to a reference of 15 epochs at batch size 512, capped at 30.
+\end{description}
+
+All timing measurements use CUDA-synchronised wall-clock timers (\texttt{torch.cuda.synchronize()} at phase boundaries) with nanosecond precision via \texttt{time.perf\_counter\_ns()}, ensuring that reported durations reflect actual GPU completion rather than asynchronous kernel launch times.
+
+% ===========================================================================
+% Placeholder for subsequent sections
+% ===========================================================================
+
+\begin{thebibliography}{9}
+\bibitem{corso2020pna}
+G.~Corso, L.~Cavalleri, D.~Beaini, P.~Li\`{o}, and P.~Veli\v{c}kovi\'{c},
+``Principal neighbourhood aggregation for graph nets,''
+\emph{Advances in Neural Information Processing Systems}, vol.~33, 2020.
+
+\bibitem{hu2021ogblsc}
+W.~Hu \emph{et al.},
+``OGB-LSC: A large-scale challenge for machine learning on graphs,''
+\emph{NeurIPS Datasets and Benchmarks}, 2021.
+\end{thebibliography}
+
+\end{document}
